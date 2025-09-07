@@ -80,7 +80,7 @@ class MobilityGenExtension(omni.ext.IExt):
                         ui.Label("USD Path / URL")
                         self.scene_usd_field_string_model = ui.SimpleStringModel()
                         self.scene_usd_field = ui.StringField(model=self.scene_usd_field_string_model, height=25)
-                        self.scene_usd_field.model.set_value("/home/pdi_4/Documentos/bevlog-isaac/mundo_pallets.usd")
+                        self.scene_usd_field.model.set_value("/home/bevlog-2/BEVLOG/BEVLOG_isaacsim/isaac_models/models/world/Factory/Factory.usd")
 
                     with ui.HStack():
                         ui.Label("Scenario Type")

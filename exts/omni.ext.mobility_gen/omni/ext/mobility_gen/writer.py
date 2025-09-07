@@ -81,6 +81,17 @@ class Writer:
                 output_path = os.path.join(output_folder, f"{step:08d}.npy")
                 np.save(output_path, value)
 
+######## writer bev ################################################
+    def write_bev(self, state_bev:dict, step:int):
+        for names, value in state_bev.items():
+            if value is not None:
+                bev_folder = os.path.join(self.path, "state", "bev", names)
+                os.makedirs(bev_folder, exist_ok=True)
+                
+                bev_path = os.path.join(bev_folder, f"{step:08d}.png")
+                bev = PIL.image.fromarray(value)
+                bev.save(bev_path)
+####################################################################
     def write_stage(self):
         if not os.path.exists(self.path):
             os.makedirs(self.path)
@@ -110,3 +121,22 @@ class Writer:
         shutil.copyfile(os.path.join(other_path, "stage.usd"), os.path.join(self.path, "stage.usd"))
         shutil.copyfile(os.path.join(other_path, "config.json"), os.path.join(self.path, "config.json"))
         shutil.copytree(os.path.join(other_path, "occupancy_map"), os.path.join(self.path, "occupancy_map"))
+    
+
+
+    #writer nuscenes mexer depois
+    def write_nuscenes(self, state_nuscenes:dict, step:int):    
+        for names, value in state_nuscenes.items():
+            if value is not None:
+                nuscenes_folder = os.path.join(self.path, "state", "nuScenes", names)
+                os.makedirs(nuscenes_folder, exist_ok=True)
+                
+                bev_path = os.path.join(nuscenes_folder, f"{step:08d}.png")
+                bev = PIL.image.fromarray(value)
+                bev.save(bev_path)
+        pass
+    #fisheye
+    def write_fisheye(self, state_fisheye:dict, step:int):
+        pass
+    #lidar
+    #mui

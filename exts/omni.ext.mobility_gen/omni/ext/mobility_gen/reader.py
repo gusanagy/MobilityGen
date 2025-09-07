@@ -41,7 +41,9 @@ class Reader:
         self.segmentation_folders = glob.glob(os.path.join(self.recording_path, "state", "segmentation", "*"))
         self.depth_folders = glob.glob(os.path.join(self.recording_path, "state", "depth", "*"))
         self.normals_folders = glob.glob(os.path.join(self.recording_path, "state", "normals", "*"))
+        self.bev_folders = glob.glob(os.path.join(self.recording_path, "state", "bev", "*"))
 
+        self.bev_names = [os.path.basename(folder) for folder in self.bev_folders]
         self.rgb_names = [os.path.basename(folder) for folder in self.rgb_folders]
         self.segmentation_names = [os.path.basename(folder) for folder in self.segmentation_folders]
         self.depth_names = [os.path.basename(folder) for folder in self.depth_folders]
@@ -78,6 +80,11 @@ class Reader:
             os.path.join(self.recording_path, "state", "normals", name, f"{step:08d}.npy")
         )
         return data
+    
+    def read_bev(self, name: str, index: int):
+        step = self.steps[index]
+        image = PIL.Image.open(os.path.join(self.recording_path, "state", "bev", name, f"{step:08d}.png"))
+        return np.asarray(image)
 
     def read_state_dict_segmentation(self, index: int):
         segmentation_dict = OrderedDict()
@@ -111,6 +118,14 @@ class Reader:
         state_dict = np.load(os.path.join(self.recording_path, "state", "common", f"{step:08d}.npy"), allow_pickle=True).item()
         return state_dict
 
+    def read_state_dict_bev(self, index:int):
+        bev_dict = OrderedDict()
+        step = self.steps[index]
+        for name in self.bev_names:
+            image = PIL.Image.open(os.path.join(self.recording_path, "state", "bev", name, f"{step:08d}.png"))
+            bev_dict[name] = np.asarray(image)
+        return bev_dict
+
     def read_state_dict(self, index: int):
 
         state_dict = self.read_state_dict_common(index)
@@ -118,9 +133,11 @@ class Reader:
         segmentation_dict = self.read_state_dict_segmentation(index)
         depth_dict = self.read_state_dict_depth(index)
         normals_dict = self.read_state_dict_normals(index)
+        bev_dict = self.read_state_dict_bev(index)
 
         full_dict = OrderedDict()
         full_dict.update(state_dict)
+        full_dict.update(bev_dict)
         full_dict.update(rgb_dict)
         full_dict.update(segmentation_dict)
         full_dict.update(depth_dict)

@@ -229,7 +229,7 @@ class RealSenseRGBDCamera(Sensor):
     - attach(): empacota o prim interno em uma Camera (sua classe)
     """
     # Ajuste para o caminho real do asset no seu servidor/Omniverse
-    usd_url: str = "omniverse://<SEU_NUCLEUS>/Assets/Isaac/…/RealSense/RealSense_D435.usd"
+    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Robots/NVIDIA/Kaya/props/realsense.usd"
     resolution: Tuple[int, int] = (1280, 720)
     camera_path: str = "camera"  # subcaminho do prim de câmera dentro do USD referenciado
 
@@ -274,7 +274,7 @@ class ZedStereoCamera(Sensor):
     - attach(): empacota os dois prims internos em duas Cameras (left/right)
     """
     # Ajuste para o caminho real do asset no seu servidor/Omniverse
-    usd_url: str = "omniverse://<SEU_NUCLEUS>/Assets/Isaac/…/Stereolabs/ZED.usd"
+    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Stereolabs/ZED_X/ZED_X.usdc"
     resolution: Tuple[int, int] = (1280, 720)
     left_camera_path: str = "left/camera_left"     # confirme no USD
     right_camera_path: str = "right/camera_right"  # confirme no USD
@@ -381,6 +381,7 @@ class BevTopDownCamera(Sensor):
     build(): cria/configura o prim ortográfico (apertures em mm) e posiciona em +Z.
     attach(): envolve o prim em uma Camera (sua classe).
     """
+    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/SG2/H60YA/Camera_SG2_OX03CC_5200_GMSL2_H60YA.usd" 
     resolution: Tuple[int, int] = (1024, 1024)
 
     def __init__(self, cam: Camera):
@@ -428,6 +429,7 @@ class BevFrontDownCamera(Sensor):
     - FOV horizontal definido por hfov_deg.
     - verticalAperture calculada pelo aspect ratio da resolução (robusto para não-16:9).
     """
+    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/SG2/H60YA/Camera_SG2_OX03CC_5200_GMSL2_H60YA.usd"
     resolution: Tuple[int, int] = (1280, 720)
 
     def __init__(self, cam: Camera):
@@ -452,6 +454,7 @@ class BevFrontDownCamera(Sensor):
         - focal = 0.5 * horiz_ap_mm / tan(HFOV/2)
         - verticalAperture = horiz_ap_mm / aspect (para respeitar a resolução escolhida)
         """
+        
         cam_prim = _define_camera_prim(prim_path)
         cam_prim.CreateProjectionAttr(UsdGeom.Tokens.perspective)
         cam_prim.CreateClippingRangeAttr(Gf.Vec2f(float(near), float(far)))
@@ -483,12 +486,204 @@ class BevFrontDownCamera(Sensor):
 
 
 
+# =========================================================
+# Camera nuScenes
+# =========================================================
+
+# sensor.py  — REPLACE the whole NuScenesCamera with this version
+
+class NuScenesCamera(Sensor):
+    """
+    Single perspective camera with nuScenes-like intrinsics (HFOV ~70°, 1600x900 by default).
+    Works as a drop-in 'front_camera_type' for Robot.build_front_camera().
+    """
+
+    # no external USD required; we define a USD camera at the given prim_path
+    resolution: Tuple[int, int] = (1600, 900)
+    hfov_deg_default: float = 70.0
+    filmback_mm: float = 36.0   # horizontal aperture in millimeters (USD expects mm)
+    near_default: float = 0.05
+    far_default: float = 1000.0
+
+    def __init__(self, cam: Camera):
+        self.cam = cam
+
+    @classmethod
+    def build(
+        cls,
+        prim_path: str,
+        *,
+        hfov_deg: float = None,
+        resolution: Tuple[int, int] = None,
+        near: float = None,
+        far: float = None,
+        translate_xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        euler_xyz_deg: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> "NuScenesCamera":
+        """
+        Creates (or reuses) a USD camera prim at prim_path with nuScenes-like intrinsics and pose,
+        then returns a NuScenesCamera(cam=Camera(prim_path, resolution)).
+        """
+        res = resolution or cls.resolution
+        hfov = float(hfov_deg if hfov_deg is not None else cls.hfov_deg_default)
+        near = float(near if near is not None else cls.near_default)
+        far  = float(far  if far  is not None else cls.far_default)
+
+        cam_prim = _define_camera_prim(prim_path)
+        cam_prim.CreateProjectionAttr(UsdGeom.Tokens.perspective)
+        cam_prim.CreateClippingRangeAttr(Gf.Vec2f(near, far))
+
+        # optics from HFOV + filmback (horizontal aperture in mm)
+        horiz_ap_mm = float(cls.filmback_mm)
+        focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov) * 0.5)
+
+        # vertical aperture consistent with the *chosen resolution* aspect
+        aspect = (res[0] / res[1]) if (res[0] and res[1]) else (16.0/9.0)
+        vert_ap_mm = horiz_ap_mm / aspect
+
+        cam_prim.CreateHorizontalApertureAttr(horiz_ap_mm)
+        cam_prim.CreateVerticalApertureAttr(vert_ap_mm)
+        cam_prim.CreateFocalLengthAttr(focal_mm)
+
+        # pose (relative to parent Xform)
+        _xform_translate(prim_path, translate_xyz)
+        qw, qx, qy, qz = _quat_from_euler_xyz(*euler_xyz_deg)
+        _xform_orient_quat(prim_path, (qw, qx, qy, qz))
+
+        return cls.attach(prim_path, res)
+
+    @classmethod
+    def attach(cls, prim_path: str, resolution: Tuple[int, int] = None) -> "NuScenesCamera":
+        res = resolution or cls.resolution
+        return NuScenesCamera(Camera(prim_path, res))
+
+
+""""
+anterior: 
+class NuScenesCamera(Sensor):
+    
+    Câmera perspectiva com parâmetros típicos do nuScenes (HFOV=70°, 1600x900).
+    build(): cria/configura o prim de câmera e posiciona.
+    attach(): envolve o prim em uma Camera (sua classe).
+    
+    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/SG2/H60YA/Camera_SG2_OX03CC_5200_GMSL2_H60YA.usd"
+    resolution: Tuple[int, int] = (1600, 900)
+
+    def __init__(self, cam: Camera):
+        self.cam = cam
+
+    @classmethod
+    def build(
+        cls,
+        prim_path: str,
+        *,
+        forward_m: float = 0.8,
+        height_m: float = 1.8,
+        pitch_down_deg: float = 10.0,
+        hfov_deg: float = 70.0,
+        resolution: Tuple[int, int] = (1600, 900),
+        near: float = 0.05,
+        far: float = 1000.0,
+        filmback_mm: float = 36.0,  # horizontalAperture "clássica" de 36mm
+    ) -> "NuScenesCamera":
+        
+        Constrói uma câmera perspectiva com HFOV alvo:
+        - focal = 0.5 * horiz_ap_mm / tan(HFOV/2)
+        - verticalAperture = horiz_ap_mm / aspect (para respeitar a resolução escolhida)
+        
+        cam_prim = _define_camera_prim(prim_path)
+        cam_prim.CreateProjectionAttr("perspective")
+        cam_prim.CreateClippingRangeAttr(Gf.Vec2f(float(near), float(far)))
+
+        # Óptica a partir do HFOV
+        horiz_ap_mm = float(filmback_mm)
+        focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov_deg) * 0.5)
+
+        # Usa o aspect da resolução (robusto para qualquer res)
+        res_x, res_y = resolution
+        aspect = (res_x / res_y) if (res_x and res_y) else (16.0 / 9.0)
+        vert_ap_mm = horiz_ap_mm / aspect
+
+        cam_prim.CreateHorizontalApertureAttr(horiz_ap_mm)
+        cam_prim.CreateVerticalApertureAttr(vert_ap_mm)
+        cam_prim.CreateFocalLengthAttr(focal_mm)
+
+    @classmethod
+    def attach(cls, prim_path: str,) -> "NuScenesCamera":
+            
+            Resolve os caminhos absolutos dos prims internos de cada câmera
+            (ex.: "<prim_path>/left/camera_left" e "<prim_path>/right/camera_right"),
+            empacota em duas instâncias Camera e retorna o par estéreo.
+            
+            
+            front_left_camera = Camera(os.path.join(prim_path, cls.front_left_camera_path), cls.resolution)
+            front_right_camera = Camera(os.path.join(prim_path, cls.front_right_camera_path), cls.resolution)
+            front_camera = Camera(os.path.join(prim_path, cls.front_camera_path), cls.resolution)
+
+            back_left_camera = Camera(os.path.join(prim_path, cls.back_left_camera_path), cls.resolution)
+            back_right_camera = Camera(os.path.join(prim_path, cls.back_right_camera_path), cls.resolution)
+            back_camera= Camera(os.path.join(prim_path, cls.back_camera_path), cls.resolution)
+            
+            return NuScenesCamera(front_left_camera, front_right_camera, front_camera, back_left_camera, back_right_camera, back_camera)      
 
 
 
+# =========================================================
+# Lidar
+# =========================================================
 
 
+class Lidar(Sensor):
+    
+    #Lidar 360° (padrão Velodyne HDL-64E).
+    #build(): cria/configura o prim de Lidar e posiciona.
+    #attach(): envolve o prim em uma Lidar (sua classe).
+    
 
+    usd_url: str = ("https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/Velodyne/HDL-64E/Velodyne-HDL-64E.usd")
+
+    def __init__(self, lidar: str):
+        self.lidar = lidar
+
+    @classmethod
+    def build(
+        cls,
+        prim_path: str,
+        *,
+        horizontal_fov_deg: float = 360.0,
+        vertical_fov_deg: float = 26.8,          # HDL-64E
+        vertical_fov_offset_deg: float = -24.9,  # HDL-64E
+        points_per_second: int = 1300000,        # HDL-64E
+        rotation_frequency_hz: float = 10.0,
+        range_m: float = 120.0,
+        position: Tuple[float, float, float] = (0.0, 0.0, 1.73),
+        orientation_quat_wxyz: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+    ) -> "Lidar":
+        
+        #Constrói um Lidar com parâmetros típicos do HDL-64E.
+        #- vertical_fov_offset_deg: deslocamento do FOV vertical (ex.: -24.9° para HDL-64E)
+        #- position: posição relativa ao prim pai (ex.: no teto do veículo)
+        #- orientation_quat_wxyz: orientação relativa ao prim pai (quaternion w,x,y,z)
+        
+
+        lidar = rep.sensors.lidar(
+            prim_path=prim_path,
+            horizontal_fov=float(horizontal_fov_deg),
+            vertical_fov=float(vertical_fov_deg),
+            vertical_fov_offset=float(vertical_fov_offset_deg),
+            points_per_second=int(points_per_second),
+            rotation_rate=float(rotation_frequency_hz),
+            max_distance=float(range_m),
+        )
+
+        # Define posição e orientação relativas ao prim pai
+        lidar.set_local_pose(position, orientation_quat_wxyz)
+
+        return cls.attach(lidar)
+
+    @classmethod
+    def attach(cls, lidar: str) -> "Lidar":
+        return Lidar(lidar)
 
 
 
