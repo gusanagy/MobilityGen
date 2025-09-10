@@ -184,33 +184,7 @@ class Robot(Module):
         prim_translate(front_camera_prim, cls.front_camera_translation)
 
         return cls.front_camera_type.build(prim_path=camera_path)
-    # @classmethod
-    # def build_front_camera(cls, prim_path):
-    #     """
-    #     Cria um mount seguro para a câmera fora da hierarquia rígida do `body`,
-    #     garantindo um Xform puro (sem colliders/rigid body) e sem imports extras.
-    #     """
-
-    #     # Evita montar a câmera dentro de "body/*".
-    #     # Sempre usamos um mount sob "<robot>/sensors/front_camera".
-    #     camera_mount_rel = "sensors/front_camera"
-    #     camera_path = os.path.join(prim_path, camera_mount_rel)
-
-    #     # Garante que o mount é um Xform puro (isso NÃO adiciona física nem colisores)
-    #     front_camera_xform = XFormPrim(camera_path)
-
-    #     # Posiciona o mount (transform relativo ao robô)
-    #     stage = get_stage()
-    #     cam_prim = stage_get_prim(stage, camera_path)
-    #     prim_rotate_x(cam_prim, cls.front_camera_rotation[0])
-    #     prim_rotate_y(cam_prim, cls.front_camera_rotation[1])
-    #     prim_rotate_z(cam_prim, cls.front_camera_rotation[2])
-    #     prim_translate(cam_prim, cls.front_camera_translation)
-
-    #     # Constrói o sensor dentro do mount Xform.
-    #     # Como o mount NÃO é um RigidBody e está FORA do `body`,
-    #     # não ocorre o erro de "RigidBody filho de RigidBody".
-    #     return cls.front_camera_type.build(prim_path=camera_path)
+    
     
 
     def build_chase_camera(self) -> str:
@@ -449,8 +423,8 @@ class FourWheelRearSteerRobot_V1(Robot):
     occupancy_map_collision_radius: float = 0.3
 
     # ===== Câmera frontal =====
-    front_camera_type = ZedStereoCamera
-    front_camera_base_path = "rgb_camera/front_camera"
+    front_camera_type = HawkCamera
+    front_camera_base_path = "sensors/rgb_camera/front_camera"
     front_camera_rotation = (0., 0., 0.)
     front_camera_translation = (10., 0., 10.)
 
