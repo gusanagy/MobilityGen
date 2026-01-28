@@ -77,6 +77,10 @@ class KeyboardTeleoperationScenario(Scenario):
 
         buttons = self.keyboard.buttons.get_value()
 
+        # Handle case where keyboard buffer hasn't been populated yet
+        if buttons is None:
+            return True
+
         w_val = float(buttons[0])
         a_val = float(buttons[1])
         s_val = float(buttons[2])
@@ -114,6 +118,11 @@ class GamepadTeleoperationScenario(Scenario):
         self.gamepad.update_state()
 
         axes = self.gamepad.axes.get_value()
+        
+        # Handle case where gamepad buffer hasn't been populated yet
+        if axes is None:
+            return True
+            
         linear_velocity = axes[0] * self.robot.gamepad_linear_velocity_gain
         angular_velocity = axes[3] * self.robot.gamepad_angular_velocity_gain
 

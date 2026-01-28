@@ -490,20 +490,15 @@ class BevFrontDownCamera(Sensor):
 # Camera nuScenes
 # =========================================================
 
-# sensor.py  — REPLACE the whole NuScenesCamera with this version
-
 class NuScenesCamera(Sensor):
     """
-    Single perspective camera with nuScenes-like intrinsics (HFOV ~70°, 1600x900 by default).
+    Single perspective camera using the SG8S-AR0820C-5300-G2A-H60SA USD asset.
     Works as a drop-in 'front_camera_type' for Robot.build_front_camera().
     """
-
-    # no external USD required; we define a USD camera at the given prim_path
-    resolution: Tuple[int, int] = (1600, 900)
-    hfov_deg_default: float = 70.0
-    filmback_mm: float = 36.0   # horizontal aperture in millimeters (USD expects mm)
-    near_default: float = 0.05
-    far_default: float = 1000.0
+    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/SG8/H60SA/SG8S-AR0820C-5300-G2A-H60SA.usd"
+    resolution: Tuple[int, int] = (1920, 1200)
+    # The camera prim path inside the USD asset
+    camera_subprim: str = "SG8S_AR0820C_5300_G2A_H60SA_01"
 
     def __init__(self, cam: Camera):
         self.cam = cam
@@ -513,49 +508,29 @@ class NuScenesCamera(Sensor):
         cls,
         prim_path: str,
         *,
-        hfov_deg: float = None,
         resolution: Tuple[int, int] = None,
-        near: float = None,
-        far: float = None,
-        translate_xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-        euler_xyz_deg: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> "NuScenesCamera":
         """
-        Creates (or reuses) a USD camera prim at prim_path with nuScenes-like intrinsics and pose,
-        then returns a NuScenesCamera(cam=Camera(prim_path, resolution)).
+        Loads the SG8S camera USD asset at prim_path and wraps the internal camera prim.
         """
-        res = resolution or cls.resolution
-        hfov = float(hfov_deg if hfov_deg is not None else cls.hfov_deg_default)
-        near = float(near if near is not None else cls.near_default)
-        far  = float(far  if far  is not None else cls.far_default)
-
-        cam_prim = _define_camera_prim(prim_path)
-        cam_prim.CreateProjectionAttr(UsdGeom.Tokens.perspective)
-        cam_prim.CreateClippingRangeAttr(Gf.Vec2f(near, far))
-
-        # optics from HFOV + filmback (horizontal aperture in mm)
-        horiz_ap_mm = float(cls.filmback_mm)
-        focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov) * 0.5)
-
-        # vertical aperture consistent with the *chosen resolution* aspect
-        aspect = (res[0] / res[1]) if (res[0] and res[1]) else (16.0/9.0)
-        vert_ap_mm = horiz_ap_mm / aspect
-
-        cam_prim.CreateHorizontalApertureAttr(horiz_ap_mm)
-        cam_prim.CreateVerticalApertureAttr(vert_ap_mm)
-        cam_prim.CreateFocalLengthAttr(focal_mm)
-
-        # pose (relative to parent Xform)
-        _xform_translate(prim_path, translate_xyz)
-        qw, qx, qy, qz = _quat_from_euler_xyz(*euler_xyz_deg)
-        _xform_orient_quat(prim_path, (qw, qx, qy, qz))
-
-        return cls.attach(prim_path, res)
+        stage = get_stage()
+        
+        # Add the USD reference at prim_path (like HawkCamera does)
+        stage_add_usd_ref(
+            stage=stage,
+            path=prim_path,
+            usd_path=cls.usd_url
+        )
+        
+        return cls.attach(prim_path, resolution)
 
     @classmethod
     def attach(cls, prim_path: str, resolution: Tuple[int, int] = None) -> "NuScenesCamera":
         res = resolution or cls.resolution
-        return NuScenesCamera(Camera(prim_path, res))
+        # Full path to camera inside the USD: prim_path/camera_subprim
+        camera_full_path = os.path.join(prim_path, cls.camera_subprim)
+
+        return NuScenesCamera(Camera(camera_full_path, res))
 
 
 """"

@@ -130,8 +130,16 @@ class Robot(Module):
         prim_rotate_z(front_camera_prim, cls.front_camera_rotation[2])
         prim_translate(front_camera_prim, cls.front_camera_translation)
 
-        # Build camera sensor (rendering is enabled later via scenario.enable_*_rendering())
+        # enable RGB rendering so recorder captures images
         sensor = cls.front_camera_type.build(prim_path=camera_path)
+        try:
+            if hasattr(sensor, "cam") and sensor.cam is not None:
+                sensor.cam.enable_rgb_rendering()
+            elif hasattr(sensor, "left") and hasattr(sensor, "right"):
+                sensor.left.enable_rgb_rendering()
+                sensor.right.enable_rgb_rendering()
+        except Exception as e:
+            print(f"[Robot.build_front_camera] enable_rgb_rendering skipped: {e}")
         return sensor
 
     @classmethod
@@ -145,8 +153,16 @@ class Robot(Module):
         prim_rotate_z(front_right_camera_prim, cls.front_right_camera_rotation[2])
         prim_translate(front_right_camera_prim, cls.front_right_camera_translation)
 
-        # Build camera sensor (rendering is enabled later via scenario.enable_*_rendering())
+        # enable RGB rendering so recorder captures images
         sensor = cls.front_right_camera_type.build(prim_path=camera_path)
+        try:
+            if hasattr(sensor, "cam") and sensor.cam is not None:
+                sensor.cam.enable_rgb_rendering()
+            elif hasattr(sensor, "left") and hasattr(sensor, "right"):
+                sensor.left.enable_rgb_rendering()
+                sensor.right.enable_rgb_rendering()
+        except Exception as e:
+            print(f"[Robot.build_front_right_camera] enable_rgb_rendering skipped: {e}")
         return sensor
 
     @classmethod
@@ -160,8 +176,16 @@ class Robot(Module):
         prim_rotate_z(front_left_camera_prim, cls.front_left_camera_rotation[2])
         prim_translate(front_left_camera_prim, cls.front_left_camera_translation)
 
-        # Build camera sensor (rendering is enabled later via scenario.enable_*_rendering())
+        # enable RGB rendering so recorder captures images
         sensor = cls.front_left_camera_type.build(prim_path=camera_path)
+        try:
+            if hasattr(sensor, "cam") and sensor.cam is not None:
+                sensor.cam.enable_rgb_rendering()
+            elif hasattr(sensor, "left") and hasattr(sensor, "right"):
+                sensor.left.enable_rgb_rendering()
+                sensor.right.enable_rgb_rendering()
+        except Exception as e:
+            print(f"[Robot.build_front_right_camera] enable_rgb_rendering skipped: {e}")
         return sensor
 
     def build_chase_camera(self) -> str:
@@ -204,18 +228,7 @@ class Robot(Module):
         self.robot.set_local_pose(
             self.position.get_value(), self.orientation.get_value()
         )
-        # Ensure articulation is initialized before setting joint positions
-        # Check if _physics_view attribute exists before accessing it
-        if hasattr(self.articulation_view, '_physics_view') and self.articulation_view._physics_view is not None:
-            self.articulation_view.set_joint_positions(self.joint_positions.get_value())
-        else:
-            # Try to initialize physics view if it doesn't exist
-            try:
-                self.articulation_view._physics_view = None  # Ensure attribute exists
-                self.articulation_view.initialize()
-                self.articulation_view.set_joint_positions(self.joint_positions.get_value())
-            except Exception as e:
-                print(f"[Warning] Could not set joint positions: {e}")
+        self.articulation_view.set_joint_positions(self.joint_positions.get_value())
         super().write_replay_data()
 
     def set_pose_2d(self, pose: Pose2d):
@@ -275,23 +288,8 @@ class WheeledRobot(Robot):
         controller = DifferentialController(
             name="controller", wheel_radius=cls.wheel_radius, wheel_base=cls.wheel_base
         )
-        
-        # Build front camera if defined
-        front_camera = None
-        if hasattr(cls, 'front_camera_base_path') and hasattr(cls, 'front_camera_type'):
-            front_camera = cls.build_front_camera(prim_path)
-        
-        # Build front right camera if defined
-        front_right_camera = None
-        if hasattr(cls, 'front_right_camera_base_path') and hasattr(cls, 'front_right_camera_type'):
-            front_right_camera = cls.build_front_right_camera(prim_path)
-        
-        # Build front left camera if defined
-        front_left_camera = None
-        if hasattr(cls, 'front_left_camera_base_path') and hasattr(cls, 'front_left_camera_type'):
-            front_left_camera = cls.build_left_camera(prim_path)
-        
-        return cls(prim_path, robot, view, controller, front_camera, front_right_camera, front_left_camera)
+        camera = cls.build_front_camera(prim_path)
+        return cls(prim_path, robot, view, controller, camera)
 
     def write_action(self, step_size: float):
         self.robot.apply_wheel_actions(
@@ -712,12 +710,12 @@ class Jetbot_SCamera(WheeledRobot):
 
     front_right_camera_base_path = "chassis/Sensors/CameraR"
     front_right_camera_rotation = (0.0, 0.0, 0.0)
-    front_right_camera_translation = (0, -2, 1)
+    front_right_camera_translation = (-2, 0, 1)
     front_right_camera_type = NuScenesCamera
 
     front_left_camera_base_path = "chassis/Sensors/CameraL"
     front_left_camera_rotation = (0.0, 0.0, 0.0)
-    front_left_camera_translation = (0, 2, 1)
+    front_left_camera_translation = (2, 0, 1)
     front_left_camera_type = NuScenesCamera
 
     # ===== Teleop =====
@@ -746,3 +744,25 @@ class Jetbot_SCamera(WheeledRobot):
     chassis_subpath: str = "chassis"
     wheel_base: float = 0.1125
     wheel_radius: float = 0.03
+
+    @classmethod
+    def build(cls, prim_path: str) -> "Jetbot_SCamera":
+        world = get_world()
+        robot = world.scene.add(
+            _WheeledRobot(
+                prim_path,
+                wheel_dof_names=cls.wheel_dof_names,
+                create_robot=True,
+                usd_path=cls.usd_url,
+            )
+        )
+        view = _ArticulationView(os.path.join(prim_path, cls.chassis_subpath))
+        world.scene.add(view)
+        controller = DifferentialController(
+            name="controller", wheel_radius=cls.wheel_radius, wheel_base=cls.wheel_base
+        )
+        # Build all three cameras
+        front_camera = cls.build_front_camera(prim_path)
+        front_right_camera = cls.build_front_right_camera(prim_path)
+        front_left_camera = cls.build_left_camera(prim_path)
+        return cls(prim_path, robot, view, controller, front_camera, front_right_camera, front_left_camera)

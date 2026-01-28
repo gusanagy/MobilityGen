@@ -15,27 +15,24 @@
 
 
 import asyncio
-import numpy as np
-import os
 import datetime
-import tempfile
 import glob
+import os
+import tempfile
 
+import numpy as np
 import omni.ext
 import omni.ui as ui
-
-from omni.ext.mobility_gen.utils.global_utils import save_stage
-from omni.ext.mobility_gen.writer import Writer
-from omni.ext.mobility_gen.inputs import GamepadDriver, KeyboardDriver
-from omni.ext.mobility_gen.scenarios import SCENARIOS, Scenario
-from omni.ext.mobility_gen.utils.global_utils import get_world
-from omni.ext.mobility_gen.robots import ROBOTS
-from omni.ext.mobility_gen.config import Config
 from omni.ext.mobility_gen.build import build_scenario_from_config
-
+from omni.ext.mobility_gen.config import Config
+from omni.ext.mobility_gen.inputs import GamepadDriver, KeyboardDriver
+from omni.ext.mobility_gen.robots import ROBOTS
+from omni.ext.mobility_gen.scenarios import SCENARIOS, Scenario
+from omni.ext.mobility_gen.utils.global_utils import get_world, save_stage
+from omni.ext.mobility_gen.writer import Writer
 
 if "MOBILITY_GEN_DATA" in os.environ:
-    DATA_DIR = os.environ['MOBILITY_GEN_DATA']
+    DATA_DIR = os.environ["MOBILITY_GEN_DATA"]
 else:
     DATA_DIR = os.path.expanduser("~/MobilityGenData")
 
@@ -44,9 +41,7 @@ SCENARIOS_DIR = os.path.join(DATA_DIR, "scenarios")
 
 
 class MobilityGenExtension(omni.ext.IExt):
-
     def on_startup(self, ext_id):
-
         self.keyboard = KeyboardDriver.connect()
         self.gamepad = GamepadDriver.connect()
         self.scenario: Scenario = None
@@ -61,15 +56,17 @@ class MobilityGenExtension(omni.ext.IExt):
         self.step: int = 0
         self.is_recording: bool = False
         self.recording_enabled: bool = False
-        self.recording_time: float = 0.
+        self.recording_time: float = 0.0
+        self._physics_callback_registered: bool = False
 
         self._occupancy_map_image_provider = omni.ui.ByteImageProvider()
 
-        self._visualize_window = omni.ui.Window("MobilityGen - Occupancy Map", width=300, height=300)
+        self._visualize_window = omni.ui.Window(
+            "MobilityGen - Occupancy Map", width=300, height=300
+        )
         with self._visualize_window.frame:
             self._occ_map_frame = ui.Frame()
             self._occ_map_frame.set_build_fn(self.build_occ_map_frame)
-            
 
         self._teleop_window = omni.ui.Window("MobilityGen", width=300, height=300)
 
@@ -79,8 +76,12 @@ class MobilityGenExtension(omni.ext.IExt):
                     with ui.HStack():
                         ui.Label("USD Path / URL")
                         self.scene_usd_field_string_model = ui.SimpleStringModel()
-                        self.scene_usd_field = ui.StringField(model=self.scene_usd_field_string_model, height=25)
-                        self.scene_usd_field.model.set_value("/home/bevlog-2/BEVLOG/BEVLOG_isaacsim/isaac_models/models/world/Factory/Factory.usd")
+                        self.scene_usd_field = ui.StringField(
+                            model=self.scene_usd_field_string_model, height=25
+                        )
+                        self.scene_usd_field.model.set_value(
+                            "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
+                        )
 
                     with ui.HStack():
                         ui.Label("Scenario Type")
@@ -89,12 +90,14 @@ class MobilityGenExtension(omni.ext.IExt):
                     with ui.HStack():
                         ui.Label("Robot Type")
                         self.robot_combo_box = ui.ComboBox(0, *ROBOTS.names())
-                
+
                     ui.Button("Build", clicked_fn=self.build_scenario)
 
                 with ui.VStack():
                     self.recording_count_label = ui.Label("")
-                    self.recording_dir_label = ui.Label(f"Output directory: {RECORDINGS_DIR}")
+                    self.recording_dir_label = ui.Label(
+                        f"Output directory: {RECORDINGS_DIR}"
+                    )
                     self.recording_name_label = ui.Label("")
                     self.recording_step_label = ui.Label("")
 
@@ -109,17 +112,16 @@ class MobilityGenExtension(omni.ext.IExt):
     def build_occ_map_frame(self):
         if self.scenario is not None:
             with ui.VStack():
-                image_widget = ui.ImageWithProvider(
-                    self._occupancy_map_image_provider
-                )
+                image_widget = ui.ImageWithProvider(self._occupancy_map_image_provider)
 
     def draw_occ_map(self):
         if self.scenario is not None:
             image = self.scenario.occupancy_map.ros_image().copy().convert("RGBA")
             data = list(image.tobytes())
-            self._occupancy_map_image_provider.set_bytes_data(data, [image.width, image.height])
+            self._occupancy_map_image_provider.set_bytes_data(
+                data, [image.width, image.height]
+            )
             self._occ_map_frame.rebuild()
-
 
     def update_recording_count(self):
         num_recordings = len(glob.glob(os.path.join(RECORDINGS_DIR, "*")))
@@ -127,21 +129,33 @@ class MobilityGenExtension(omni.ext.IExt):
 
     def create_config(self):
         config = Config(
-            scenario_type=list(SCENARIOS.names())[self.scenario_combo_box.model.get_item_value_model().get_value_as_int()],
-            robot_type=list(ROBOTS.names())[self.robot_combo_box.model.get_item_value_model().get_value_as_int()],
-            scene_usd=self.scene_usd_field_string_model.as_string
+            scenario_type=list(SCENARIOS.names())[
+                self.scenario_combo_box.model.get_item_value_model().get_value_as_int()
+            ],
+            robot_type=list(ROBOTS.names())[
+                self.robot_combo_box.model.get_item_value_model().get_value_as_int()
+            ],
+            scene_usd=self.scene_usd_field_string_model.as_string,
         )
         return config
-    
+
     def scenario_type(self):
         index = self.scenario_combo_box.model.get_item_value_model().get_value_as_int()
         return SCENARIOS.get_index(index)
-    
+
     def on_shutdown(self):
         self.keyboard.disconnect()
         self.gamepad.disconnect()
         world = get_world()
-        world.remove_physics_callback("scenario_physics", self.on_physics)
+        if world is not None and self._physics_callback_registered:
+            try:
+                world.remove_physics_callback("mobility_gen_physics")
+                self._physics_callback_registered = False
+            except Exception:
+                pass  # Callback may not exist
+
+        self.clear_scenario()
+        self.clear_recording()
 
     def start_new_recording(self):
         recording_name = datetime.datetime.now().isoformat()
@@ -151,12 +165,14 @@ class MobilityGenExtension(omni.ext.IExt):
         writer.write_occupancy_map(self.scenario.occupancy_map)
         writer.copy_stage(self.cached_stage_path)
         self.step = 0
-        self.recording_time = 0.
+        self.recording_time = 0.0
         self.recording_name_label.text = f"Current recording name: {recording_name}"
-        self.recording_step_label.text = f"Current recording duration: {self.recording_time:.2f}s"
+        self.recording_step_label.text = (
+            f"Current recording duration: {self.recording_time:.2f}s"
+        )
         self.writer = writer
         self.update_recording_count()
-    
+
     def clear_recording(self):
         self.writer = None
         self.recording_name_label.text = "Current recording name: "
@@ -178,31 +194,30 @@ class MobilityGenExtension(omni.ext.IExt):
 
     def reset(self):
         self.writer = None
-        self.scenario.reset()
+        if self.scenario is not None:
+            self.scenario.reset()
         if self.recording_enabled:
             self.start_new_recording()
 
     def on_physics(self, step_size: int):
-
         if self.scenario is not None:
-
             is_alive = self.scenario.step(step_size)
 
             if not is_alive:
                 self.reset()
-            
+
             if self.writer is not None:
                 state_dict = self.scenario.state_dict_common()
                 self.writer.write_state_dict_common(state_dict, step=self.step)
                 self.step += 1
                 self.recording_time += step_size
                 if self.step % 15 == 0:
-                    self.recording_step_label.text = f"Current recording duration: {self.recording_time:.2f}s"
+                    self.recording_step_label.text = (
+                        f"Current recording duration: {self.recording_time:.2f}s"
+                    )
 
     def build_scenario(self):
-
         async def _build_scenario_async():
-            
             self.clear_recording()
             self.clear_scenario()
 
@@ -212,13 +227,14 @@ class MobilityGenExtension(omni.ext.IExt):
             self.scenario = await build_scenario_from_config(config)
 
             self.draw_occ_map()
-            
+
             world = get_world()
             await world.reset_async()
 
             self.scenario.reset()
 
-            world.add_physics_callback("scenario_physics", self.on_physics)
+            world.add_physics_callback("mobility_gen_physics", self.on_physics)
+            self._physics_callback_registered = True
 
             # cache stage
             self.cached_stage_path = os.path.join(tempfile.mkdtemp(), "stage.usd")
