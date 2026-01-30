@@ -12,8 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
 import os
 import math
 from typing import Tuple, Optional
@@ -25,11 +23,9 @@ from isaacsim.core.prims import SingleXFormPrim as XFormPrim
 from pxr import UsdGeom, Gf, Sdf
 from isaacsim.core.prims import SingleXFormPrim as XFormPrim
 
-
 from omni.ext.mobility_gen.utils.global_utils import get_stage
 from omni.ext.mobility_gen.utils.stage_utils import stage_add_usd_ref
 from omni.ext.mobility_gen.common import Module, Buffer
-
 
 class Sensor(Module):
 
@@ -39,7 +35,6 @@ class Sensor(Module):
     def attach(self, prim_path: str):
         raise NotImplementedError
 
-# tenho que editar os sensores de camera usando esse modulo como base 
 class Camera(Sensor):
 
     def __init__(self,
@@ -144,9 +139,10 @@ class Camera(Sensor):
 
     def update_state(self):
         if self._rgb_annotator is not None:
-            self.rgb_image.set_value(
-                self._rgb_annotator.get_data()[:, :, :3]
-            )
+            rgb_data = self._rgb_annotator.get_data()
+            # Verificar se os dados estão prontos (array 3D com shape HxWxC)
+            if rgb_data is not None and rgb_data.ndim >= 3:
+                self.rgb_image.set_value(rgb_data[:, :, :3])
         if self._segmentation_annotator is not None:
             data = self._segmentation_annotator.get_data()
             seg_image = data['data']
@@ -421,8 +417,11 @@ class BevTopDownCamera(Sensor):
     def attach(cls, prim_path: str, resolution: Tuple[int, int] = None) -> "BevTopDownCamera":
         res = resolution if resolution is not None else cls.resolution
         return BevTopDownCamera(Camera(prim_path, res))
+# =========================================================
 
-
+# ========================================================
+# BEV CAMERA
+# =========================================================
 class BevFrontDownCamera(Sensor):
     """
     Câmera perspectiva à frente e inclinada para baixo.
@@ -484,12 +483,9 @@ class BevFrontDownCamera(Sensor):
         res = resolution if resolution is not None else cls.resolution
         return BevFrontDownCamera(Camera(prim_path, res))
 
-
-
 # =========================================================
 # Camera nuScenes
 # =========================================================
-
 class NuScenesCamera(Sensor):
     """
     Single perspective camera using the SG8S-AR0820C-5300-G2A-H60SA USD asset.
@@ -533,11 +529,9 @@ class NuScenesCamera(Sensor):
         return NuScenesCamera(Camera(camera_full_path, res))
 #========================================================
 
-
 # =========================================================
 # Câmera Fisheye com distorção OpenCV
 # =========================================================
-
 class FisheyeCamera(Sensor):
     """
     Câmera fisheye usando modelo de distorção OpenCV fisheye.
@@ -631,3 +625,202 @@ class FisheyeCamera(Sensor):
         """
         res = resolution or cls.resolution
         return FisheyeCamera(Camera(prim_path, res))
+# =========================================================
+
+#=========================================================
+# Lidar Sensor
+#=========================================================
+class LidarSensor(Sensor):
+    """
+    RTX Lidar sensor using the LidarRtx class from Isaac Sim 5.1.0.
+    Uses OmniLidar prims with OmniSensorGenericLidarCoreAPI schema.
+    """
+    
+    def __init__(self, lidar_rtx):
+        """
+        Args:
+            lidar_rtx: LidarRtx instance wrapping the OmniLidar prim
+        """
+        self._lidar = lidar_rtx
+        self.point_cloud = Buffer(tags=["point_cloud"])
+        self.intensities = Buffer(tags=["intensities"])
+        self.distances = Buffer(tags=["distances"])
+        self._debug_draw_enabled = False
+        self._debug_draw_color = (0.0, 1.0, 0.0, 1.0)
+        self._draw_interface = None
+
+    @classmethod
+    def build(
+        cls,
+        prim_path: str,
+        *,
+        translation: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        orientation: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+        config_file_name: str = "Example_Rotary",
+        **sensor_attributes,
+    ) -> "LidarSensor":
+        """
+        Creates an RTX Lidar using the LidarRtx class.
+        
+        Args:
+            prim_path: Path where the OmniLidar prim will be created
+            translation: (x, y, z) position
+            orientation: (w, x, y, z) quaternion orientation
+            config_file_name: Name of the lidar config (e.g., "Example_Rotary", "HESAI_XT32_SD10")
+            **sensor_attributes: Additional attributes for the OmniLidar prim
+        
+        Returns:
+            LidarSensor instance
+        """
+        from isaacsim.sensors.rtx import LidarRtx
+        
+        print(f"[LidarSensor] Building at {prim_path} with config {config_file_name}")
+        
+        # Use LidarRtx directly - it will create the OmniLidar prim internally
+        lidar = LidarRtx(
+            prim_path=prim_path,
+            translation=np.array(translation),
+            orientation=np.array(orientation),
+            config_file_name=config_file_name,
+        )
+        
+        # Attach the correct annotator for RTX Lidar in Isaac Sim 5.1
+        try:
+            lidar.attach_annotator("IsaacExtractRTXSensorPointCloudNoAccumulator")
+            print("[LidarSensor] Attached point cloud annotator")
+        except Exception as e:
+            print(f"[LidarSensor] Warning: Could not attach annotator: {e}")
+        
+        return cls(lidar)
+    
+    @classmethod
+    def attach(cls, prim_path: str) -> "LidarSensor":
+        """
+        Attach to an existing OmniLidar prim.
+        """
+        from isaacsim.sensors.rtx import LidarRtx
+        
+        lidar = LidarRtx(prim_path=prim_path)
+        try:
+            lidar.attach_annotator("IsaacExtractRTXSensorPointCloudNoAccumulator")
+        except Exception as e:
+            print(f"[LidarSensor] Warning: Could not attach annotator: {e}")
+        
+        return cls(lidar)
+#Funçoes para o lidar sensor ==========================================
+    def update_state(self):
+        """
+        Collects data from the RTX Lidar annotators.
+        """
+        try:
+            # Acessar dados diretamente dos annotators internos
+            if hasattr(self._lidar, '_annotators') and self._lidar._annotators:
+                for name, annotator in self._lidar._annotators.items():
+                    data = annotator.get_data()
+                    
+                    if data is not None and 'data' in data:
+                        pc = data['data']
+                        if pc is not None and hasattr(pc, 'shape') and pc.shape[0] > 0:
+                            self.point_cloud.set_value(pc)
+                        if 'intensity' in data and data['intensity'].shape[0] > 0:
+                            self.intensities.set_value(data['intensity'])
+                        if 'distance' in data and data['distance'].shape[0] > 0:
+                            self.distances.set_value(data['distance'])
+                        break
+        except:
+            pass
+        
+        super().update_state()
+    
+    def enable_rendering(self):
+        """Enable lidar rendering."""
+        try:
+            self._lidar.resume()
+        except:
+            pass
+    
+    def disable_rendering(self):
+        """Disable lidar rendering."""
+        try:
+            self._lidar.pause()
+        except:
+            pass
+
+    def enable_debug_draw(self, color: Tuple[float, float, float, float] = (0.0, 1.0, 0.0, 1.0)):
+        """
+        Habilita a visualização dos pontos do Lidar no viewport usando debug draw.
+        
+        Args:
+            color: Cor RGBA dos pontos (default: verde)
+        """
+        self._debug_draw_enabled = True
+        self._debug_draw_color = color
+        try:
+            from isaacsim.util.debug_draw import _debug_draw
+            self._draw_interface = _debug_draw.acquire_debug_draw_interface()
+            print(f"[LidarSensor] Debug draw enabled with color {color}")
+        except ImportError as e:
+            print(f"[LidarSensor] Warning: debug_draw not available: {e}")
+            self._debug_draw_enabled = False
+    
+    def disable_debug_draw(self):
+        """Desabilita a visualização debug draw."""
+        self._debug_draw_enabled = False
+        if self._draw_interface is not None:
+            try:
+                self._draw_interface.clear_points()
+            except:
+                pass
+    
+    def draw_point_cloud(self, point_size: float = 2.0, subsample: int = 10, draw_every_n_frames: int = 2):
+        """
+        Desenha os pontos do Lidar no viewport.
+        Chamar após update_state() no loop de física.
+        
+        Args:
+            point_size: Tamanho dos pontos
+            subsample: Pegar 1 a cada N pontos (default: 20 = ~3500 pontos de 70000)
+            draw_every_n_frames: Desenhar a cada N frames (default: 5)
+        """
+        if not self._debug_draw_enabled or self._draw_interface is None:
+            return
+        
+        # Controle de frequência
+        if not hasattr(self, '_draw_frame_count'):
+            self._draw_frame_count = 0
+        self._draw_frame_count += 1
+        
+        if self._draw_frame_count % draw_every_n_frames != 0:
+            return
+            
+        points = self.point_cloud.get_value()
+        if points is None:
+            return
+            
+        # Converter para numpy array se necessário
+        if not isinstance(points, np.ndarray):
+            points = np.array(points)
+        
+        if points.size == 0:
+            return
+        
+        # Garantir shape correto (N, 3)
+        if points.ndim == 1:
+            points = points.reshape(-1, 3)
+        
+        # Subsample para performance
+        if subsample > 1:
+            points = points[::subsample]
+        
+        num_points = len(points)
+        if num_points == 0:
+            return
+        
+        # Limpar pontos anteriores e desenhar novos
+        try:
+            self._draw_interface.clear_points()
+            colors = [self._debug_draw_color] * num_points
+            sizes = [point_size] * num_points
+            self._draw_interface.draw_points(points.tolist(), colors, sizes)
+        except:
+            pass

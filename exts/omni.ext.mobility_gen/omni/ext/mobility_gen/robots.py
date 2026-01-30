@@ -38,7 +38,8 @@ from omni.ext.mobility_gen.sensors import (
     RealSenseRGBDCamera,
     Sensor,
     ZedStereoCamera,
-    FisheyeCamera
+    FisheyeCamera,
+    LidarSensor,
 )
 from omni.ext.mobility_gen.types import Pose2d
 from omni.ext.mobility_gen.utils.global_utils import get_stage, get_world
@@ -65,6 +66,7 @@ from pxr import Gf, UsdGeom
 
 
 class Robot(Module):
+#inicializando os modulos
     physics_dt: float
     z_offset: float
 
@@ -99,6 +101,12 @@ class Robot(Module):
     fisheye_camera_rotation: Tuple[float, float, float]
     fisheye_camera_translation: Tuple[float, float, float]
 
+    lidar_sensor_type: Type[Sensor]
+    lidar_sensor_base_path: str
+    lidar_sensor_rotation: Tuple[float, float, float]
+    lidar_sensor_translation: Tuple[float, float, float]
+    lidar_file_name: str
+    lidar_sensor_attributes: dict
 
     def __init__(
         self,
@@ -109,6 +117,7 @@ class Robot(Module):
         frontR_camera: Sensor,
         frontL_camera: Sensor,
         fisheye_camera: Sensor = None,
+        lidar_sensor: Sensor = None,
     ):
         self.prim_path = prim_path
         self.robot = robot
@@ -122,6 +131,7 @@ class Robot(Module):
         self.front_right_camera = frontR_camera
         self.front_left_camera = frontL_camera
         self.fisheye_camera = fisheye_camera
+        self.lidar_sensor = lidar_sensor
 
     @classmethod
     def build_front_camera(cls, prim_path):
@@ -164,7 +174,7 @@ class Robot(Module):
         return sensor
 
     @classmethod
-    def build_left_camera(cls, prim_path):
+    def build_front_left_camera(cls, prim_path):
         camera_path = os.path.join(prim_path, cls.front_left_camera_base_path)
         XFormPrim(camera_path)
         stage = get_stage()
@@ -180,7 +190,7 @@ class Robot(Module):
             if hasattr(sensor, "cam") and sensor.cam is not None:
                 sensor.cam.enable_rgb_rendering()
         except Exception as e:
-            print(f"[Robot.build_front_right_camera] enable_rgb_rendering skipped: {e}")
+            print(f"[Robot.build_front_left_camera] enable_rgb_rendering skipped: {e}")
         return sensor
     
     @classmethod
@@ -200,6 +210,23 @@ class Robot(Module):
                 sensor.cam.enable_rgb_rendering()
         except Exception as e:
             print(f"[Robot.build_fisheye_camera] enable_rgb_rendering skipped: {e}")
+        return sensor
+    
+    @classmethod
+    def build_lidar_sensor(cls, prim_path):
+        sensor_path = os.path.join(prim_path, cls.lidar_sensor_base_path)
+        # Note: Do NOT create XFormPrim here - LidarRtx will create the OmniLidar prim
+        # The translation/rotation are passed directly to LidarRtx
+        sensor = cls.lidar_sensor_type.build(
+            prim_path=sensor_path,
+            translation=cls.lidar_sensor_translation,
+            config_file_name=cls.lidar_file_name,
+        )
+        # Atualizar e desenhar Lidar
+        if hasattr(cls, 'lidar_sensor') and cls.lidar_sensor is not None:
+            cls.lidar_sensor.update_state()
+            cls.lidar_sensor.draw_point_cloud()
+
         return sensor
 
     def build_chase_camera(self) -> str:
@@ -282,6 +309,7 @@ class WheeledRobot(Robot):
         frontR_camera: Sensor | None = None,
         frontL_camera: Sensor | None = None,
         fisheye_camera: Sensor | None = None,
+        lidar_sensor: Sensor | None = None,
     ):
         super().__init__(
             prim_path,
@@ -291,6 +319,7 @@ class WheeledRobot(Robot):
             frontR_camera,
             frontL_camera,
             fisheye_camera,
+            lidar_sensor,
         )
         self.controller = controller
 
@@ -312,8 +341,9 @@ class WheeledRobot(Robot):
         )
         camera = cls.build_front_camera(prim_path)
         fisheye_camera = cls.build_fisheye_camera(prim_path)
+        lidar_sensor = cls.build_lidar_sensor(prim_path)
 
-        return cls(prim_path, robot, view, controller, camera, fisheye_camera)
+        return cls(prim_path, robot, view, controller, camera, fisheye_camera, lidar_sensor)
 
     def write_action(self, step_size: float):
         self.robot.apply_wheel_actions(
@@ -716,16 +746,17 @@ class Jetbot_SCamera(WheeledRobot):
     physics_dt: float = 0.005
     z_offset: float = 0.1
 
-    chase_camera_base_path = "chassis/Sensors/"
-    chase_camera_x_offset: float = -0.5
-    chase_camera_z_offset: float = 0.5
-    chase_camera_tilt_angle: float = 60.0
-
     occupancy_map_radius: float = 0.25
     occupancy_map_z_min: float = 0.05
     occupancy_map_z_max: float = 0.5
     occupancy_map_cell_size: float = 0.05
     occupancy_map_collision_radius: float = 0.25
+
+# ===================== Sensores ================================
+    chase_camera_base_path = "chassis/Sensors/"
+    chase_camera_x_offset: float = -0.5
+    chase_camera_z_offset: float = 0.5
+    chase_camera_tilt_angle: float = 60.0
 
     front_camera_base_path = "chassis/Sensors/Camera"
     front_camera_rotation = (0.0, 0.0, 0.0)
@@ -747,6 +778,21 @@ class Jetbot_SCamera(WheeledRobot):
     fisheye_camera_translation = (1, 0, 1)
     fisheye_camera_type = FisheyeCamera
 
+    lidar_sensor_base_path = "chassis/Sensors/LidarSensor"
+    lidar_sensor_rotation = (0.0, 0.0, 0.0)
+    lidar_sensor_translation = (0, 0, 1)
+    lidar_sensor_type = LidarSensor
+    lidar_file_name: str = "Example_Rotary"
+    lidar_sensor_attributes: dict = {
+        "horizontal_fov": 360.0,
+        "vertical_fov": 30.0,
+        "points_per_second": 100000,
+        'omni:sensor:Core:scanRateBaseHz': 20,
+        "range": 10.0,
+        "channels": 32,
+    }
+   
+# ===================== Ações ================================
     # ===== Teleop =====
     keyboard_linear_velocity_gain: float = 5.25
     keyboard_angular_velocity_gain: float = 10.0
@@ -790,18 +836,21 @@ class Jetbot_SCamera(WheeledRobot):
         controller = DifferentialController(
             name="controller", wheel_radius=cls.wheel_radius, wheel_base=cls.wheel_base
         )
-        # Build all three cameras
-        # front_camera = cls.build_front_camera(prim_path)
+# ===================== buildando sensores ================================
+        front_camera = cls.build_front_camera(prim_path)
         front_right_camera = cls.build_front_right_camera(prim_path)
-        front_left_camera = cls.build_left_camera(prim_path)
+        front_left_camera = cls.build_front_left_camera(prim_path)
         fisheye_camera = cls.build_fisheye_camera(prim_path)
+        lidar_sensor = cls.build_lidar_sensor(prim_path)
 
         return cls(
             prim_path,
             robot,
             view,
             controller,
+            front_camera,
             front_right_camera,
             front_left_camera,
             fisheye_camera,
+            lidar_sensor,
         )

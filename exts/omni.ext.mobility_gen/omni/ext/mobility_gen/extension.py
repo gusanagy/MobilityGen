@@ -205,6 +205,11 @@ class MobilityGenExtension(omni.ext.IExt):
 
             if not is_alive:
                 self.reset()
+#====================================================================
+            # Desenhar point cloud do Lidar no viewport (se disponível)
+            if hasattr(self.scenario, 'robot') and self.scenario.robot is not None:
+                if hasattr(self.scenario.robot, 'lidar_sensor') and self.scenario.robot.lidar_sensor is not None:
+                    self.scenario.robot.lidar_sensor.draw_point_cloud()
 
             if self.writer is not None:
                 state_dict = self.scenario.state_dict_common()
@@ -232,6 +237,11 @@ class MobilityGenExtension(omni.ext.IExt):
             await world.reset_async()
 
             self.scenario.reset()
+
+            # Habilitar debug draw do Lidar (se disponível)
+            if hasattr(self.scenario, 'robot') and self.scenario.robot is not None:
+                if hasattr(self.scenario.robot, 'lidar_sensor') and self.scenario.robot.lidar_sensor is not None:
+                    self.scenario.robot.lidar_sensor.enable_debug_draw(color=(0.0, 1.0, 0.0, 1.0))
 
             world.add_physics_callback("mobility_gen_physics", self.on_physics)
             self._physics_callback_registered = True
