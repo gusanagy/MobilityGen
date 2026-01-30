@@ -38,6 +38,7 @@ from omni.ext.mobility_gen.sensors import (
     RealSenseRGBDCamera,
     Sensor,
     ZedStereoCamera,
+    FisheyeCamera
 )
 from omni.ext.mobility_gen.types import Pose2d
 from omni.ext.mobility_gen.utils.global_utils import get_stage, get_world
@@ -93,10 +94,11 @@ class Robot(Module):
     front_left_camera_rotation: Tuple[float, float, float]
     front_left_camera_translation: Tuple[float, float, float]
 
-    back_camera_type: Type[Sensor]
-    back_camera_base_path: str
-    back_camera_rotation: Tuple[float, float, float]
-    back_camera_translation: Tuple[float, float, float]
+    fisheye_camera_type: Type[Sensor] = Type[Sensor]
+    fisheye_camera_base_path: str
+    fisheye_camera_rotation: Tuple[float, float, float]
+    fisheye_camera_translation: Tuple[float, float, float]
+
 
     def __init__(
         self,
@@ -106,6 +108,7 @@ class Robot(Module):
         front_camera: Sensor,
         frontR_camera: Sensor,
         frontL_camera: Sensor,
+        fisheye_camera: Sensor = None,
     ):
         self.prim_path = prim_path
         self.robot = robot
@@ -118,6 +121,7 @@ class Robot(Module):
         self.front_camera = front_camera
         self.front_right_camera = frontR_camera
         self.front_left_camera = frontL_camera
+        self.fisheye_camera = fisheye_camera
 
     @classmethod
     def build_front_camera(cls, prim_path):
@@ -135,9 +139,6 @@ class Robot(Module):
         try:
             if hasattr(sensor, "cam") and sensor.cam is not None:
                 sensor.cam.enable_rgb_rendering()
-            elif hasattr(sensor, "left") and hasattr(sensor, "right"):
-                sensor.left.enable_rgb_rendering()
-                sensor.right.enable_rgb_rendering()
         except Exception as e:
             print(f"[Robot.build_front_camera] enable_rgb_rendering skipped: {e}")
         return sensor
@@ -158,9 +159,6 @@ class Robot(Module):
         try:
             if hasattr(sensor, "cam") and sensor.cam is not None:
                 sensor.cam.enable_rgb_rendering()
-            elif hasattr(sensor, "left") and hasattr(sensor, "right"):
-                sensor.left.enable_rgb_rendering()
-                sensor.right.enable_rgb_rendering()
         except Exception as e:
             print(f"[Robot.build_front_right_camera] enable_rgb_rendering skipped: {e}")
         return sensor
@@ -181,11 +179,27 @@ class Robot(Module):
         try:
             if hasattr(sensor, "cam") and sensor.cam is not None:
                 sensor.cam.enable_rgb_rendering()
-            elif hasattr(sensor, "left") and hasattr(sensor, "right"):
-                sensor.left.enable_rgb_rendering()
-                sensor.right.enable_rgb_rendering()
         except Exception as e:
             print(f"[Robot.build_front_right_camera] enable_rgb_rendering skipped: {e}")
+        return sensor
+    
+    @classmethod
+    def build_fisheye_camera(cls, prim_path):
+        camera_path = os.path.join(prim_path, cls.fisheye_camera_base_path)
+        XFormPrim(camera_path)
+        stage = get_stage()
+        FisheyeCamera_prim = stage_get_prim(stage, camera_path)
+        prim_rotate_x(FisheyeCamera_prim, cls.fisheye_camera_rotation[0])
+        prim_rotate_y(FisheyeCamera_prim, cls.fisheye_camera_rotation[1])
+        prim_rotate_z(FisheyeCamera_prim, cls.fisheye_camera_rotation[2])
+        prim_translate(FisheyeCamera_prim, cls.fisheye_camera_translation)
+        # enable RGB rendering so recorder captures images
+        sensor = cls.fisheye_camera_type.build(prim_path=camera_path)
+        try:
+            if hasattr(sensor, "cam") and sensor.cam is not None:
+                sensor.cam.enable_rgb_rendering()
+        except Exception as e:
+            print(f"[Robot.build_fisheye_camera] enable_rgb_rendering skipped: {e}")
         return sensor
 
     def build_chase_camera(self) -> str:
@@ -267,9 +281,17 @@ class WheeledRobot(Robot):
         front_camera: Sensor | None = None,
         frontR_camera: Sensor | None = None,
         frontL_camera: Sensor | None = None,
-
+        fisheye_camera: Sensor | None = None,
     ):
-        super().__init__(prim_path, robot, articulation_view, front_camera, frontR_camera, frontL_camera)
+        super().__init__(
+            prim_path,
+            robot,
+            articulation_view,
+            front_camera,
+            frontR_camera,
+            frontL_camera,
+            fisheye_camera,
+        )
         self.controller = controller
 
     @classmethod
@@ -289,7 +311,9 @@ class WheeledRobot(Robot):
             name="controller", wheel_radius=cls.wheel_radius, wheel_base=cls.wheel_base
         )
         camera = cls.build_front_camera(prim_path)
-        return cls(prim_path, robot, view, controller, camera)
+        fisheye_camera = cls.build_fisheye_camera(prim_path)
+
+        return cls(prim_path, robot, view, controller, camera, fisheye_camera)
 
     def write_action(self, step_size: float):
         self.robot.apply_wheel_actions(
@@ -595,10 +619,10 @@ class SpotRobot(IsaacLabRobot):
     occupancy_map_cell_size: float = 0.05
     occupancy_map_collision_radius: float = 0.5
 
-    front_camera_base_path = "body/front_camera"
-    front_camera_rotation = (180, 180, 180)
-    front_camera_translation = (0.44, 0.075, 0.01)
-    front_camera_type = HawkCamera
+    # front_camera_base_path = "body/front_camera"
+    # front_camera_rotation = (180, 180, 180)
+    # front_camera_translation = (0.44, 0.075, 0.01)
+    # front_camera_type = HawkCamera
 
     keyboard_linear_velocity_gain: float = 1.0
     keyboard_angular_velocity_gain: float = 1.0
@@ -718,6 +742,11 @@ class Jetbot_SCamera(WheeledRobot):
     front_left_camera_translation = (2, 0, 1)
     front_left_camera_type = NuScenesCamera
 
+    fisheye_camera_base_path = "chassis/Sensors/FisheyeCamera"
+    fisheye_camera_rotation = (0.0, 0.0, 0.0)
+    fisheye_camera_translation = (1, 0, 1)
+    fisheye_camera_type = FisheyeCamera
+
     # ===== Teleop =====
     keyboard_linear_velocity_gain: float = 5.25
     keyboard_angular_velocity_gain: float = 10.0
@@ -762,7 +791,17 @@ class Jetbot_SCamera(WheeledRobot):
             name="controller", wheel_radius=cls.wheel_radius, wheel_base=cls.wheel_base
         )
         # Build all three cameras
-        front_camera = cls.build_front_camera(prim_path)
+        # front_camera = cls.build_front_camera(prim_path)
         front_right_camera = cls.build_front_right_camera(prim_path)
         front_left_camera = cls.build_left_camera(prim_path)
-        return cls(prim_path, robot, view, controller, front_camera, front_right_camera, front_left_camera)
+        fisheye_camera = cls.build_fisheye_camera(prim_path)
+
+        return cls(
+            prim_path,
+            robot,
+            view,
+            controller,
+            front_right_camera,
+            front_left_camera,
+            fisheye_camera,
+        )

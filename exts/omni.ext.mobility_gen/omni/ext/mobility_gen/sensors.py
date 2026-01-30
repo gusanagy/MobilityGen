@@ -22,7 +22,7 @@ import numpy as np
 import omni.usd
 import omni.replicator.core as rep
 from isaacsim.core.prims import SingleXFormPrim as XFormPrim
-from pxr import UsdGeom, Gf
+from pxr import UsdGeom, Gf, Sdf
 from isaacsim.core.prims import SingleXFormPrim as XFormPrim
 
 
@@ -531,18 +531,25 @@ class NuScenesCamera(Sensor):
         camera_full_path = os.path.join(prim_path, cls.camera_subprim)
 
         return NuScenesCamera(Camera(camera_full_path, res))
+#========================================================
 
 
-""""
-anterior: 
-class NuScenesCamera(Sensor):
-    
-    Câmera perspectiva com parâmetros típicos do nuScenes (HFOV=70°, 1600x900).
-    build(): cria/configura o prim de câmera e posiciona.
-    attach(): envolve o prim em uma Camera (sua classe).
-    
-    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/SG2/H60YA/Camera_SG2_OX03CC_5200_GMSL2_H60YA.usd"
-    resolution: Tuple[int, int] = (1600, 900)
+# =========================================================
+# Câmera Fisheye com distorção OpenCV
+# =========================================================
+
+class FisheyeCamera(Sensor):
+    """
+    Câmera fisheye usando modelo de distorção OpenCV fisheye.
+    Baseado na documentação do Isaac Sim 5.1:
+    https://docs.isaacsim.omniverse.nvidia.com/5.1.0/sensors/isaacsim_sensors_camera.html
+    """
+    resolution: Tuple[int, int] = (1920, 1200)
+    camera_matrix = [[455.8, 0.0, 943.8], [0.0, 454.7, 602.3], [0.0, 0.0, 1.0]]
+    distortion_coefficients = [0.05, 0.01, -0.003, -0.0005]
+    pixel_size = 3
+    f_stop = 1.8
+    focus_distance = 1.5
 
     def __init__(self, cam: Camera):
         self.cam = cam
@@ -552,406 +559,75 @@ class NuScenesCamera(Sensor):
         cls,
         prim_path: str,
         *,
-        forward_m: float = 0.8,
-        height_m: float = 1.8,
-        pitch_down_deg: float = 10.0,
-        hfov_deg: float = 70.0,
-        resolution: Tuple[int, int] = (1600, 900),
+        resolution: Tuple[int, int] = None,
+        camera_matrix: list = None,
+        distortion_coefficients: list = None,
+        pixel_size: float = None,
+        f_stop: float = None,
+        focus_distance: float = None,
         near: float = 0.05,
-        far: float = 1000.0,
-        filmback_mm: float = 36.0,  # horizontalAperture "clássica" de 36mm
-    ) -> "NuScenesCamera":
+        far: float = 100000.0,
+    ) -> "FisheyeCamera":
+        """
+        Cria uma câmera fisheye com parâmetros de calibração OpenCV.
         
-        Constrói uma câmera perspectiva com HFOV alvo:
-        - focal = 0.5 * horiz_ap_mm / tan(HFOV/2)
-        - verticalAperture = horiz_ap_mm / aspect (para respeitar a resolução escolhida)
-        
+        Args:
+            prim_path: Caminho USD onde a câmera será criada
+            resolution: Tupla (largura, altura) da imagem
+            camera_matrix: Matriz intrínseca 3x3 [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]
+            distortion_coefficients: Lista [k1, k2, k3, k4] de distorção fisheye
+            pixel_size: Tamanho do pixel em microns
+            f_stop: f-number para depth of field (0.0 desabilita DoF)
+            focus_distance: Distância de foco em metros
+            near: Plano de clipping próximo
+            far: Plano de clipping distante
+        """
+        res = resolution or cls.resolution
+        width, height = res
+        cam_matrix = camera_matrix or cls.camera_matrix
+        dist_coeffs = distortion_coefficients or cls.distortion_coefficients
+        px_size = pixel_size or cls.pixel_size
+        fstop = f_stop or cls.f_stop
+        focus_dist = focus_distance or cls.focus_distance
+
+        ((fx, _, cx), (_, fy, cy), (_, _, _)) = cam_matrix
+
+        horizontal_aperture = px_size * width * 1e-6  
+        vertical_aperture = px_size * height * 1e-6   
+        focal_length_x = px_size * fx * 1e-6          
+        focal_length_y = px_size * fy * 1e-6          
+        focal_length = (focal_length_x + focal_length_y) / 2 
+
         cam_prim = _define_camera_prim(prim_path)
-        cam_prim.CreateProjectionAttr("perspective")
+        cam_prim.CreateProjectionAttr(UsdGeom.Tokens.perspective)
         cam_prim.CreateClippingRangeAttr(Gf.Vec2f(float(near), float(far)))
+        cam_prim.CreateFocalLengthAttr(focal_length * 1000.0)  
+        cam_prim.CreateHorizontalApertureAttr(horizontal_aperture * 1000.0)
+        cam_prim.CreateVerticalApertureAttr(vertical_aperture * 1000.0)  
+        cam_prim.CreateFStopAttr(fstop)
+        cam_prim.CreateFocusDistanceAttr(focus_dist)
 
-        # Óptica a partir do HFOV
-        horiz_ap_mm = float(filmback_mm)
-        focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov_deg) * 0.5)
-
-        # Usa o aspect da resolução (robusto para qualquer res)
-        res_x, res_y = resolution
-        aspect = (res_x / res_y) if (res_x and res_y) else (16.0 / 9.0)
-        vert_ap_mm = horiz_ap_mm / aspect
-
-        cam_prim.CreateHorizontalApertureAttr(horiz_ap_mm)
-        cam_prim.CreateVerticalApertureAttr(vert_ap_mm)
-        cam_prim.CreateFocalLengthAttr(focal_mm)
-
-    @classmethod
-    def attach(cls, prim_path: str,) -> "NuScenesCamera":
-            
-            Resolve os caminhos absolutos dos prims internos de cada câmera
-            (ex.: "<prim_path>/left/camera_left" e "<prim_path>/right/camera_right"),
-            empacota em duas instâncias Camera e retorna o par estéreo.
-            
-            
-            front_left_camera = Camera(os.path.join(prim_path, cls.front_left_camera_path), cls.resolution)
-            front_right_camera = Camera(os.path.join(prim_path, cls.front_right_camera_path), cls.resolution)
-            front_camera = Camera(os.path.join(prim_path, cls.front_camera_path), cls.resolution)
-
-            back_left_camera = Camera(os.path.join(prim_path, cls.back_left_camera_path), cls.resolution)
-            back_right_camera = Camera(os.path.join(prim_path, cls.back_right_camera_path), cls.resolution)
-            back_camera= Camera(os.path.join(prim_path, cls.back_camera_path), cls.resolution)
-            
-            return NuScenesCamera(front_left_camera, front_right_camera, front_camera, back_left_camera, back_right_camera, back_camera)      
-
-
-
-# =========================================================
-# Lidar
-# =========================================================
-
-
-class Lidar(Sensor):
-    
-    #Lidar 360° (padrão Velodyne HDL-64E).
-    #build(): cria/configura o prim de Lidar e posiciona.
-    #attach(): envolve o prim em uma Lidar (sua classe).
-    
-
-    usd_url: str = ("https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/Velodyne/HDL-64E/Velodyne-HDL-64E.usd")
-
-    def __init__(self, lidar: str):
-        self.lidar = lidar
-
-    @classmethod
-    def build(
-        cls,
-        prim_path: str,
-        *,
-        horizontal_fov_deg: float = 360.0,
-        vertical_fov_deg: float = 26.8,          # HDL-64E
-        vertical_fov_offset_deg: float = -24.9,  # HDL-64E
-        points_per_second: int = 1300000,        # HDL-64E
-        rotation_frequency_hz: float = 10.0,
-        range_m: float = 120.0,
-        position: Tuple[float, float, float] = (0.0, 0.0, 1.73),
-        orientation_quat_wxyz: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
-    ) -> "Lidar":
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath(prim_path)
         
-        #Constrói um Lidar com parâmetros típicos do HDL-64E.
-        #- vertical_fov_offset_deg: deslocamento do FOV vertical (ex.: -24.9° para HDL-64E)
-        #- position: posição relativa ao prim pai (ex.: no teto do veículo)
-        #- orientation_quat_wxyz: orientação relativa ao prim pai (quaternion w,x,y,z)
-        
+        # Aplicar atributos de distorção fisheye OpenCV
+        # Usando os atributos do schema OmniLensDistortion
+        prim.CreateAttribute("omni:lens:distortion:model", Sdf.ValueTypeNames.Token).Set("OpenCVFisheye")
+        prim.CreateAttribute("omni:lens:distortion:opencv:fisheye:k1", Sdf.ValueTypeNames.Float).Set(float(dist_coeffs[0]))
+        prim.CreateAttribute("omni:lens:distortion:opencv:fisheye:k2", Sdf.ValueTypeNames.Float).Set(float(dist_coeffs[1]))
+        prim.CreateAttribute("omni:lens:distortion:opencv:fisheye:k3", Sdf.ValueTypeNames.Float).Set(float(dist_coeffs[2]))
+        prim.CreateAttribute("omni:lens:distortion:opencv:fisheye:k4", Sdf.ValueTypeNames.Float).Set(float(dist_coeffs[3]))
+        prim.CreateAttribute("omni:lens:distortion:opencv:cx", Sdf.ValueTypeNames.Float).Set(float(cx))
+        prim.CreateAttribute("omni:lens:distortion:opencv:cy", Sdf.ValueTypeNames.Float).Set(float(cy))
+        prim.CreateAttribute("omni:lens:distortion:opencv:fx", Sdf.ValueTypeNames.Float).Set(float(fx))
+        prim.CreateAttribute("omni:lens:distortion:opencv:fy", Sdf.ValueTypeNames.Float).Set(float(fy))
 
-        lidar = rep.sensors.lidar(
-            prim_path=prim_path,
-            horizontal_fov=float(horizontal_fov_deg),
-            vertical_fov=float(vertical_fov_deg),
-            vertical_fov_offset=float(vertical_fov_offset_deg),
-            points_per_second=int(points_per_second),
-            rotation_rate=float(rotation_frequency_hz),
-            max_distance=float(range_m),
-        )
-
-        # Define posição e orientação relativas ao prim pai
-        lidar.set_local_pose(position, orientation_quat_wxyz)
-
-        return cls.attach(lidar)
+        return cls.attach(prim_path, res)
 
     @classmethod
-    def attach(cls, lidar: str) -> "Lidar":
-        return Lidar(lidar)
-
-
-
-# class RealSenseRGBDCamera(Sensor):
-#     """
-#     RGB + Depth via Replicator (tipo RealSense).
-#     Estrutura: build/attach e atributo .cam (instância de Camera).
-#     """
-#     resolution: Tuple[int, int] = (1280, 720)
-
-#     def __init__(self, cam: Camera):
-#         self.cam = cam
-
-#     @classmethod
-#     def build(
-#         cls,
-#         prim_path: str,
-#         *,
-#         forward_m: float = 0.4,
-#         height_m: float = 1.2,
-#         pitch_down_deg: float = 10.0,
-#         hfov_deg: float = 69.0,
-#         resolution: Tuple[int, int] = (1280, 720),
-#     ) -> "RealSenseRGBDCamera":
-#         cam_prim = _define_camera_prim(prim_path)
-#         cam_prim.CreateProjectionAttr(UsdGeom.Tokens.perspective)
-#         cam_prim.CreateClippingRangeAttr(Gf.Vec2f(0.05, 1000.0))
-
-#         horiz_ap_mm = 36.0
-#         focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov_deg) * 0.5)
-#         cam_prim.CreateHorizontalApertureAttr(horiz_ap_mm)
-#         cam_prim.CreateVerticalApertureAttr(horiz_ap_mm * (9.0 / 16.0))
-#         cam_prim.CreateFocalLengthAttr(focal_mm)
-
-#         _xform_translate(prim_path, (forward_m, 0.0, height_m))
-#         qw, qx, qy, qz = _quat_from_euler_xyz(0.0, -pitch_down_deg, 0.0)
-#         _xform_orient_quat(prim_path, (qw, qx, qy, qz))
-
-#         return cls.attach(prim_path, resolution)
-
-#     @classmethod
-#     def attach(cls, prim_path: str, resolution: Tuple[int, int] = None) -> "RealSenseRGBDCamera":
-#         res = resolution if resolution is not None else cls.resolution
-#         return RealSenseRGBDCamera(Camera(prim_path, res))
-
-
-# class ZedStereoCamera(Sensor):
-#     """
-#     Estéreo (baseline no eixo Y). Estrutura: build/attach, atributos .left/.right (Camera).
-#     """
-#     resolution: Tuple[int, int] = (1280, 720)
-#     left_name: str = "left"
-#     right_name: str = "right"
-
-#     def __init__(self, left: Camera, right: Camera):
-#         self.left = left
-#         self.right = right
-
-#     @classmethod
-#     def build(
-#         cls,
-#         base_path: str,
-#         *,
-#         forward_m: float = 0.5,
-#         height_m: float = 1.3,
-#         baseline_m: float = 0.12,
-#         hfov_deg: float = 90.0,
-#         resolution: Tuple[int, int] = (1280, 720),
-#     ) -> "ZedStereoCamera":
-#         left_path = os.path.join(base_path, cls.left_name)
-#         right_path = os.path.join(base_path, cls.right_name)
-
-#         def _mk(path: str, y_off: float):
-#             cam_prim = _define_camera_prim(path)
-#             cam_prim.CreateProjectionAttr(UsdGeom.Tokens.perspective)
-#             cam_prim.CreateClippingRangeAttr(Gf.Vec2f(0.05, 1000.0))
-#             horiz_ap_mm = 36.0
-#             focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov_deg) * 0.5)
-#             cam_prim.CreateHorizontalApertureAttr(horiz_ap_mm)
-#             cam_prim.CreateVerticalApertureAttr(horiz_ap_mm * (9.0 / 16.0))
-#             cam_prim.CreateFocalLengthAttr(focal_mm)
-#             _xform_translate(path, (forward_m, y_off, height_m))
-
-#         _mk(left_path, -baseline_m / 2.0)
-#         _mk(right_path, +baseline_m / 2.0)
-#         return cls.attach(base_path, resolution)
-
-#     @classmethod
-#     def attach(cls, base_path: str, resolution: Tuple[int, int] = None) -> "ZedStereoCamera":
-#         res = resolution if resolution is not None else cls.resolution
-#         left = Camera(os.path.join(base_path, cls.left_name), res)
-#         right = Camera(os.path.join(base_path, cls.right_name), res)
-#         return ZedStereoCamera(left, right)
-
-
-
-
-# # =========================================================
-# # HELPERS USD (criar/posicionar Cameras)
-# # =========================================================
-
-
-
-# # =========================================================
-# # SENSORES PRONTOS PARA USO NO ROBÔ
-# # =========================================================
-
-# class HawkCamera(Sensor):
-#     """Stereo Leopard Imaging (USD pronto)."""
-#     usd_url: str = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Sensors/LeopardImaging/Hawk/hawk_v1.1_nominal.usd"
-#     resolution: Tuple[int, int] = (960, 600)
-#     left_camera_path: str = "left/camera_left"
-#     right_camera_path: str = "right/camera_right"
-
-#     def __init__(self, left: Camera, right: Camera):
-#         self.left = left
-#         self.right = right
-
-#     @classmethod
-#     def build(cls, prim_path: str) -> "HawkCamera":
-#         stage = get_stage()
-#         stage_add_usd_ref(stage=stage, path=prim_path, usd_path=cls.usd_url)
-#         return cls.attach(prim_path)
-
-#     @classmethod
-#     def attach(cls, prim_path: str) -> "HawkCamera":
-#         left = Camera(os.path.join(prim_path, cls.left_camera_path), cls.resolution)
-#         right = Camera(os.path.join(prim_path, cls.right_camera_path), cls.resolution)
-#         return HawkCamera(left, right)
-
-#     # atalhos
-#     def enable_rgb_pair(self):
-#         self.left.enable_rgb()
-#         self.right.enable_rgb()
-
-
-# class BevTopDownCamera(Sensor):
-#     """
-#     Câmera ortográfica (vista superior métrica) – ideal para GT BEV.
-#     """
-#     def __init__(self, cam: Camera):
-#         self.cam = cam
-
-#     @classmethod
-#     def build(cls,
-#               prim_path: str,
-#               *,
-#               height_m: float = 5.0,
-#               view_width_m: float = 14.0,
-#               view_height_m: float = 14.0,
-#               resolution: Tuple[int, int] = (1024, 1024)) -> "BevTopDownCamera":
-#         cam = _define_camera_prim(prim_path)
-#         cam.CreateProjectionAttr(UsdGeom.Tokens.orthographic)
-#         cam.CreateHorizontalApertureAttr(view_width_m * 10.0)
-#         cam.CreateVerticalApertureAttr(view_height_m * 10.0)
-#         cam.CreateClippingRangeAttr(Gf.Vec2f(0.05, 2000.0))
-#         _xform_translate(prim_path, (0.0, 0.0, float(height_m)))
-#         # orientação padrão da câmera USD é olhar -Z, então basta subir no +Z
-#         return cls.attach(prim_path, resolution)
-
-#     @classmethod
-#     def attach(cls, prim_path: str, resolution: Tuple[int, int] = (1024, 1024)) -> "BevTopDownCamera":
-#         return BevTopDownCamera(Camera(prim_path, resolution))
-
-#     # atalhos de anotadores
-#     def enable_rgb(self): self.cam.enable_rgb()
-#     def enable_segmentation(self): self.cam.enable_segmentation(instance_ids=False)
-#     def enable_instance_ids(self): self.cam.enable_segmentation(instance_ids=True)
-
-
-# class BevFrontDownCamera(Sensor):
-#     """
-#     Câmera perspectiva posicionada à frente e inclinada para baixo.
-#     Útil como “quase-BEV” para contexto frontal.
-#     """
-#     def __init__(self, cam: Camera):
-#         self.cam = cam
-
-#     @classmethod
-#     def build(cls,
-#               prim_path: str,
-#               *,
-#               forward_m: float = 0.8,
-#               height_m: float = 1.8,
-#               pitch_down_deg: float = 55.0,
-#               hfov_deg: float = 70.0,
-#               resolution: Tuple[int, int] = (1280, 720)) -> "BevFrontDownCamera":
-#         cam = _define_camera_prim(prim_path)
-#         cam.CreateProjectionAttr(UsdGeom.Tokens.perspective)
-#         cam.CreateClippingRangeAttr(Gf.Vec2f(0.05, 1000.0))
-#         # simula lente: aperture 36 mm e focal por FOV horizontal
-#         horiz_ap_mm = 36.0
-#         focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov_deg) * 0.5)
-#         cam.CreateHorizontalApertureAttr(horiz_ap_mm)
-#         # aspect ~ 16:9 (writer controlará a resolução)
-#         cam.CreateVerticalApertureAttr(horiz_ap_mm * (9.0 / 16.0))
-#         cam.CreateFocalLengthAttr(focal_mm)
-#         _xform_translate(prim_path, (forward_m, 0.0, height_m))
-#         # rotaciona -pitch em Y
-#         ang = -pitch_down_deg
-#         qw, qx, qy, qz = _quat_from_euler_xyz(0.0, ang, 0.0)
-#         _xform_orient_quat(prim_path, (qw, qx, qy, qz))
-#         return cls.attach(prim_path, resolution)
-
-#     @classmethod
-#     def attach(cls, prim_path: str, resolution: Tuple[int, int] = (1280, 720)) -> "BevFrontDownCamera":
-#         return BevFrontDownCamera(Camera(prim_path, resolution))
-
-#     def enable_rgb(self): self.cam.enable_rgb()
-
-
-# class RealSenseRGBDCamera(Sensor):
-#     """
-#     Câmera “tipo RealSense”: RGB + Depth (via Replicator).
-#     """
-#     def __init__(self, cam: Camera):
-#         self.cam = cam
-
-#     @classmethod
-#     def build(cls,
-#               prim_path: str,
-#               *,
-#               forward_m: float = 0.4,
-#               height_m: float = 1.2,
-#               pitch_down_deg: float = 10.0,
-#               hfov_deg: float = 69.0,
-#               resolution: Tuple[int, int] = (1280, 720)) -> "RealSenseRGBDCamera":
-#         c = _define_camera_prim(prim_path)
-#         c.CreateProjectionAttr(UsdGeom.Tokens.perspective)
-#         c.CreateClippingRangeAttr(Gf.Vec2f(0.05, 1000.0))
-#         horiz_ap_mm = 36.0
-#         focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov_deg) * 0.5)
-#         c.CreateHorizontalApertureAttr(horiz_ap_mm)
-#         c.CreateVerticalApertureAttr(horiz_ap_mm * (9.0 / 16.0))
-#         c.CreateFocalLengthAttr(focal_mm)
-#         _xform_translate(prim_path, (forward_m, 0.0, height_m))
-#         qw, qx, qy, qz = _quat_from_euler_xyz(0.0, -pitch_down_deg, 0.0)
-#         _xform_orient_quat(prim_path, (qw, qx, qy, qz))
-#         return cls.attach(prim_path, resolution)
-
-#     @classmethod
-#     def attach(cls, prim_path: str, resolution: Tuple[int, int] = (1280, 720)) -> "RealSenseRGBDCamera":
-#         return RealSenseRGBDCamera(Camera(prim_path, resolution))
-
-#     # atalhos
-#     def enable_rgb(self): self.cam.enable_rgb()
-#     def enable_depth(self): self.cam.enable_depth()
-#     def enable_rgbd(self): self.cam.enable_rgbd()
-
-
-# class ZedStereoCamera(Sensor):
-#     """
-#     Estéreo tipo ZED (duas câmeras com baseline no eixo Y).
-#     """
-#     def __init__(self, left: Camera, right: Camera):
-#         self.left = left
-#         self.right = right
-
-#     @classmethod
-#     def build(cls,
-#               base_path: str,
-#               *,
-#               forward_m: float = 0.5,
-#               height_m: float = 1.3,
-#               baseline_m: float = 0.12,
-#               hfov_deg: float = 90.0,
-#               resolution: Tuple[int, int] = (1280, 720)) -> "ZedStereoCamera":
-#         stage = omni.usd.get_context().get_stage()
-#         left_path = os.path.join(base_path, "left")
-#         right_path = os.path.join(base_path, "right")
-
-#         def _mk(path: str, y_off: float):
-#             cam = _define_camera_prim(path)
-#             cam.CreateProjectionAttr(UsdGeom.Tokens.perspective)
-#             cam.CreateClippingRangeAttr(Gf.Vec2f(0.05, 1000.0))
-#             horiz_ap_mm = 36.0
-#             focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov_deg) * 0.5)
-#             cam.CreateHorizontalApertureAttr(horiz_ap_mm)
-#             cam.CreateVerticalApertureAttr(horiz_ap_mm * (9.0 / 16.0))
-#             cam.CreateFocalLengthAttr(focal_mm)
-#             _xform_translate(path, (forward_m, y_off, height_m))
-#             return path
-
-#         _mk(left_path, -baseline_m / 2.0)
-#         _mk(right_path, +baseline_m / 2.0)
-#         return cls.attach(base_path, resolution)
-
-#     @classmethod
-#     def attach(cls, base_path: str, resolution: Tuple[int, int] = (1280, 720)) -> "ZedStereoCamera":
-#         left = Camera(os.path.join(base_path, "left"), resolution)
-#         right = Camera(os.path.join(base_path, "right"), resolution)
-#         return ZedStereoCamera(left, right)
-
-#     def enable_rgb_pair(self):
-#         self.left.enable_rgb()
-#         self.right.enable_rgb()
+    def attach(cls, prim_path: str, resolution: Tuple[int, int] = None) -> "FisheyeCamera":
+        """
+        Anexa a uma câmera fisheye existente.
+        """
+        res = resolution or cls.resolution
+        return FisheyeCamera(Camera(prim_path, res))
