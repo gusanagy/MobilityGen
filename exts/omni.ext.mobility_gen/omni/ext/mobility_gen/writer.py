@@ -139,4 +139,12 @@ class Writer:
     def write_fisheye(self, state_fisheye:dict, step:int):
         pass
     #lidar
-    #mui
+    def write_state_dict_point_cloud(self, state_point_cloud: dict, step: int):
+        """Salva os dados de point cloud do lidar como arquivos .npy"""
+        for name, value in state_point_cloud.items():
+            if value is not None and hasattr(value, 'shape') and value.shape[0] > 0:
+                output_folder = os.path.join(self.path, "state", "point_cloud", name)
+                if not os.path.exists(output_folder):
+                    os.makedirs(output_folder)
+                output_path = os.path.join(output_folder, f"{step:08d}.npy")
+                np.save(output_path, value)

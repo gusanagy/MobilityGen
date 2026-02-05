@@ -14,6 +14,11 @@
 # limitations under the License.
 
 import os
+import logging
+
+# Configurar logging para debug
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("MobilityGen.build")
 
 import isaacsim.core.utils.prims as prim_utils
 from isaacsim.core.utils.stage import open_stage
@@ -37,6 +42,13 @@ def load_scenario(path: str) -> Scenario:
     robot_type = ROBOTS.get(config.robot_type)
     scenario_type = SCENARIOS.get(config.scenario_type)
     open_stage(os.path.join(path, "stage.usd"))
+    
+    # Limpar SDGPipeline graph corrompido do stage carregado
+    try:
+        prim_utils.delete_prim("/Render/PostProcess/SDGPipeline")
+    except:
+        pass
+    
     prim_utils.delete_prim("/World/robot")
     new_world(physics_dt=robot_type.physics_dt)
     occupancy_map = reader.read_occupancy_map()
@@ -52,21 +64,46 @@ def load_scenario(path: str) -> Scenario:
 
 
 async def build_scenario_from_config(config: Config):
+    logger.info("=== Iniciando build_scenario_from_config ===")
+    
     robot_type = ROBOTS.get(config.robot_type)
     scenario_type = SCENARIOS.get(config.scenario_type)
+    logger.info(f"Robot type: {config.robot_type}, Scenario type: {config.scenario_type}")
+    
+    logger.debug("Criando novo stage...")
     new_stage()
+    
+    logger.debug("Criando novo world...")
     world = new_world(physics_dt=robot_type.physics_dt)
+    
+    logger.debug("Inicializando simulation context...")
     await world.initialize_simulation_context_async()
+    
+    logger.info(f"Adicionando scene USD: {config.scene_usd}")
     add_reference_to_stage(config.scene_usd,"/World/scene")
+    
+    logger.debug("Adicionando ground plane...")
     objects.GroundPlane("/World/ground_plane", visible=False)
+    
+    logger.info("Construindo robot...")
     robot = robot_type.build("/World/robot")
+    logger.info("Robot construído com sucesso")
+    
+    logger.info("Gerando occupancy map (pode demorar)...")
     occupancy_map = await occupancy_map_generate_from_prim_async(
         "/World/scene",
         cell_size=robot.occupancy_map_cell_size,
         z_min=robot.occupancy_map_z_min,
         z_max=robot.occupancy_map_z_max
     )
+    logger.info(f"Occupancy map gerado: {occupancy_map.width_pixels()}x{occupancy_map.height_pixels()} pixels")
+    
+    logger.debug("Construindo chase camera...")
     chase_camera_path = robot.build_chase_camera()
     set_viewport_camera(chase_camera_path)
+    
+    logger.info("Criando scenario...")
     scenario = scenario_type.from_robot_occupancy_map(robot, occupancy_map)
+    logger.info("=== build_scenario_from_config concluído ===")
+    
     return scenario

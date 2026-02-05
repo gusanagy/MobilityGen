@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+logger = logging.getLogger("MobilityGen.occupancy_map_utils")
 
 import enum
 import numpy as np
@@ -73,23 +75,31 @@ async def occupancy_map_generate_from_prim_async(
         unknown_as_freespace: bool = True
     ) -> OccupancyMap:
 
+    logger.info(f"=== Iniciando geração do occupancy map para {prim_path} ===")
+    logger.debug(f"Parâmetros: cell_size={cell_size}, z_min={z_min}, z_max={z_max}")
+    
     app = get_app()
 
+    logger.debug("Adquirindo interface omap...")
     om = _occupancy_map.acquire_omap_interface()
     
     timeline = omni.timeline.get_timeline_interface()
 
+    logger.debug("Aguardando next_update_async (1)...")
     await app.next_update_async()
     
     stage = get_stage()
     stage_scale = UsdGeom.GetStageMetersPerUnit(stage)
+    logger.debug(f"Stage scale: {stage_scale}")
 
     if stage_scale != 1.0:
         raise RuntimeError("Stage unit must be 1 meter.")
     
     # Apply physics
+    logger.debug("Definindo physics scene...")
     UsdPhysics.Scene.Define(stage, Sdf.Path("/World/physicsScene"))
     
+    logger.debug("Aguardando next_update_async (2)...")
     await app.next_update_async()
     
 
@@ -97,16 +107,22 @@ async def occupancy_map_generate_from_prim_async(
     prim_path = os.path.join(prim_path)
     prim_path = stage.GetPrimAtPath(prim_path)
 
+    logger.debug("Calculando bounding box do prim...")
     lower_bound, upper_bound, midpoint = prim_compute_bbox(prim_path)
+    logger.info(f"Bounding box: lower={lower_bound}, upper={upper_bound}")
+    
     lower_bound = (lower_bound[0], lower_bound[1], z_min)
     upper_bound = (upper_bound[0], upper_bound[1], z_max)
 
     width = upper_bound[0] - lower_bound[0]
     height = upper_bound[1] - lower_bound[1]
+    logger.info(f"Dimensões do mapa: {width:.2f}m x {height:.2f}m")
+    
     origin = (lower_bound[0] - cell_size, lower_bound[1] - cell_size, 0)
     lower_bound = (0, 0, z_min)
     upper_bound = (width + cell_size, height + cell_size, z_max)
 
+    logger.debug("Atualizando localização do occupancy map...")
     update_location(
         om,
         origin,
@@ -114,41 +130,58 @@ async def occupancy_map_generate_from_prim_async(
         upper_bound
     )
     
+    logger.debug("Aguardando next_update_async (3)...")
     await app.next_update_async()
     
 
     # Set cell size
+    logger.debug(f"Configurando cell_size={cell_size}...")
     om.set_cell_size(cell_size)
     
+    logger.debug("Aguardando next_update_async (4)...")
     await app.next_update_async()
     
 
     # Generate occupancy map
+    logger.debug("Parando timeline...")
     timeline.stop()
     
+    logger.debug("Aguardando next_update_async (5)...")
     await app.next_update_async()
     
+    logger.debug("Iniciando timeline...")
     timeline.play()
     
+    logger.debug("Aguardando next_update_async (6)...")
     await app.next_update_async()
     
+    logger.info("Gerando occupancy map (om.generate())... ISSO PODE DEMORAR")
     om.generate()
+    logger.info("om.generate() concluído!")
     
+    logger.debug("Aguardando next_update_async (7)...")
     await app.next_update_async()
     
+    logger.debug("Parando timeline final...")
     timeline.stop()
     
+    logger.debug("Aguardando next_update_async (8)...")
     await app.next_update_async()
     
 
     # Format Image
+    logger.debug("Formatando imagem do occupancy map...")
     buffer = om.get_buffer()
     dims = om.get_dimensions()
+    logger.info(f"Dimensões do buffer: {dims}")
+    
     buffer = np.array(buffer)
     buffer = np.reshape(buffer, (dims[1], dims[0]))
     occupied_mask = buffer == 1.0
     freespace_mask = buffer == 0.0
     unknown_mask = ~(occupied_mask | freespace_mask)
+    
+    logger.debug(f"Pixels ocupados: {np.sum(occupied_mask)}, livres: {np.sum(freespace_mask)}, desconhecidos: {np.sum(unknown_mask)}")
 
     if unknown_as_freespace:
         freespace_mask[unknown_mask] = True
@@ -184,8 +217,10 @@ async def occupancy_map_generate_from_prim_async(
         occupied_thresh=ROS_OCCUPIED_THRESH_DEFAULT
     )
     
+    logger.debug("Liberando interface omap...")
     _occupancy_map.release_omap_interface(om)
 
+    logger.info("=== Geração do occupancy map concluída ===")
     return occupancy_map
 
 

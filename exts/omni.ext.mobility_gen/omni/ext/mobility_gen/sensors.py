@@ -94,48 +94,63 @@ class Camera(Sensor):
             self.enable_rendering()
         if self._rgb_annotator is not None:
             return
-        self._rgb_annotator = rep.AnnotatorRegistry.get_annotator("LdrColor")
-        self._rgb_annotator.attach(self._render_product)
+        try:
+            self._rgb_annotator = rep.AnnotatorRegistry.get_annotator("LdrColor")
+            self._rgb_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_rgb_rendering failed: {e}")
 
     def enable_segmentation_rendering(self):
         if self._render_product is None:
             self.enable_rendering()
         if self._segmentation_annotator is not None:
             return
-        self._segmentation_annotator = rep.AnnotatorRegistry.get_annotator(
-            "semantic_segmentation", init_params=dict(colorize=False)
-        )
-        self._segmentation_annotator.attach(self._render_product)
+        try:
+            self._segmentation_annotator = rep.AnnotatorRegistry.get_annotator(
+                "semantic_segmentation", init_params=dict(colorize=False)
+            )
+            self._segmentation_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_segmentation_rendering failed: {e}")
 
     def enable_instance_id_segmentation_rendering(self):
         if self._render_product is None:
             self.enable_rendering()
         if self._instance_id_segmentation_annotator is not None:
             return
-        self._instance_id_segmentation_annotator = rep.AnnotatorRegistry.get_annotator(
-            "instance_id_segmentation", init_params=dict(colorize=False)
-        )
-        self._instance_id_segmentation_annotator.attach(self._render_product)
+        try:
+            self._instance_id_segmentation_annotator = rep.AnnotatorRegistry.get_annotator(
+                "instance_id_segmentation", init_params=dict(colorize=False)
+            )
+            self._instance_id_segmentation_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_instance_id_segmentation_rendering failed: {e}")
 
     def enable_depth_rendering(self):
         if self._render_product is None:
             self.enable_rendering()
         if self._depth_annotator is not None:
             return
-        self._depth_annotator = rep.AnnotatorRegistry.get_annotator(
-            "distance_to_camera"
-        )
-        self._depth_annotator.attach(self._render_product)
+        try:
+            self._depth_annotator = rep.AnnotatorRegistry.get_annotator(
+                "distance_to_camera"
+            )
+            self._depth_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_depth_rendering failed: {e}")
 
     def enable_normals_rendering(self):
         if self._render_product is None:
             self.enable_rendering()
         if self._normals_annotator is not None:
             return
-        self._normals_annotator = rep.AnnotatorRegistry.get_annotator(
-            "normals"
-        )
-        self._normals_annotator.attach(self._render_product)
+        try:
+            self._normals_annotator = rep.AnnotatorRegistry.get_annotator(
+                "normals"
+            )
+            self._normals_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_normals_rendering failed: {e}")
 
     def update_state(self):
         if self._rgb_annotator is not None:
@@ -684,13 +699,6 @@ class LidarSensor(Sensor):
             config_file_name=config_file_name,
         )
         
-        # Attach the correct annotator for RTX Lidar in Isaac Sim 5.1
-        try:
-            lidar.attach_annotator("IsaacExtractRTXSensorPointCloudNoAccumulator")
-            print("[LidarSensor] Attached point cloud annotator")
-        except Exception as e:
-            print(f"[LidarSensor] Warning: Could not attach annotator: {e}")
-        
         return cls(lidar)
     
     @classmethod
@@ -707,6 +715,7 @@ class LidarSensor(Sensor):
             print(f"[LidarSensor] Warning: Could not attach annotator: {e}")
         
         return cls(lidar)
+
 #Funçoes para o lidar sensor ==========================================
     def update_state(self):
         """
@@ -740,19 +749,40 @@ class LidarSensor(Sensor):
             pass
     
     def disable_rendering(self):
-        """Disable lidar rendering."""
+        #Disable lidar rendering.
         try:
             self._lidar.pause()
         except:
             pass
 
+    # Métodos de compatibilidade para replay (Lidar não usa esses annotators)
+    def enable_rgb_rendering(self):
+        """Lidar não tem RGB - método vazio para compatibilidade."""
+        pass
+    
+    def enable_segmentation_rendering(self):
+        """Lidar não tem segmentação - método vazio para compatibilidade."""
+        pass
+    
+    def enable_depth_rendering(self):
+        """Lidar não tem depth image - método vazio para compatibilidade."""
+        pass
+    
+    def enable_instance_id_segmentation_rendering(self):
+        """Lidar não tem instance segmentation - método vazio para compatibilidade."""
+        pass
+    
+    def enable_normals_rendering(self):
+        """Lidar não tem normals - método vazio para compatibilidade."""
+        pass
+
+"""
     def enable_debug_draw(self, color: Tuple[float, float, float, float] = (0.0, 1.0, 0.0, 1.0)):
-        """
-        Habilita a visualização dos pontos do Lidar no viewport usando debug draw.
+        #Habilita a visualização dos pontos do Lidar no viewport usando debug draw.
         
-        Args:
-            color: Cor RGBA dos pontos (default: verde)
-        """
+        #Args:
+            #color: Cor RGBA dos pontos (default: verde)
+
         self._debug_draw_enabled = True
         self._debug_draw_color = color
         try:
@@ -764,24 +794,27 @@ class LidarSensor(Sensor):
             self._debug_draw_enabled = False
     
     def disable_debug_draw(self):
-        """Desabilita a visualização debug draw."""
+        #Desabilita a visualização debug draw.
         self._debug_draw_enabled = False
         if self._draw_interface is not None:
             try:
                 self._draw_interface.clear_points()
             except:
                 pass
-    
+    """
+
+
+"""
     def draw_point_cloud(self, point_size: float = 2.0, subsample: int = 10, draw_every_n_frames: int = 2):
-        """
-        Desenha os pontos do Lidar no viewport.
-        Chamar após update_state() no loop de física.
+    
+        #Desenha os pontos do Lidar no viewport.
+        #Chamar após update_state() no loop de física.
         
-        Args:
-            point_size: Tamanho dos pontos
-            subsample: Pegar 1 a cada N pontos (default: 20 = ~3500 pontos de 70000)
-            draw_every_n_frames: Desenhar a cada N frames (default: 5)
-        """
+        #Args:
+            #point_size: Tamanho dos pontos
+            #subsample: Pegar 1 a cada N pontos (default: 20 = ~3500 pontos de 70000)
+            #draw_every_n_frames: Desenhar a cada N frames (default: 5)
+        
         if not self._debug_draw_enabled or self._draw_interface is None:
             return
         
@@ -824,3 +857,4 @@ class LidarSensor(Sensor):
             self._draw_interface.draw_points(points.tolist(), colors, sizes)
         except:
             pass
+        """

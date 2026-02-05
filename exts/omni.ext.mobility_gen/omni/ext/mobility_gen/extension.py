@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+logging.basicConfig(level=logging.DEBUG, format='[%(name)s] %(levelname)s: %(message)s')
+logger = logging.getLogger("MobilityGen.extension")
 
 import asyncio
 import datetime
@@ -201,19 +204,41 @@ class MobilityGenExtension(omni.ext.IExt):
 
     def on_physics(self, step_size: int):
         if self.scenario is not None:
-            is_alive = self.scenario.step(step_size)
+            # Log apenas a cada 100 steps para não sobrecarregar
+            if not hasattr(self, '_physics_step_count'):
+                self._physics_step_count = 0
+            self._physics_step_count += 1
+            
+            if self._physics_step_count == 1:
+                logger.info("on_physics: Primeiro step de física!")
+            elif self._physics_step_count % 100 == 0:
+                logger.debug(f"on_physics: step {self._physics_step_count}")
+            
+            try:
+                is_alive = self.scenario.step(step_size)
+            except Exception as e:
+                logger.error(f"on_physics: Erro no scenario.step(): {e}")
+                import traceback
+                traceback.print_exc()
+                return
 
             if not is_alive:
+                logger.info("on_physics: Cenário morreu, resetando...")
                 self.reset()
 #====================================================================
             # Desenhar point cloud do Lidar no viewport (se disponível)
-            if hasattr(self.scenario, 'robot') and self.scenario.robot is not None:
-                if hasattr(self.scenario.robot, 'lidar_sensor') and self.scenario.robot.lidar_sensor is not None:
-                    self.scenario.robot.lidar_sensor.draw_point_cloud()
+            #if hasattr(self.scenario, 'robot') and self.scenario.robot is not None:
+            #    if hasattr(self.scenario.robot, 'lidar_sensor') and self.scenario.robot.lidar_sensor is not None:
+            #        self.scenario.robot.lidar_sensor.draw_point_cloud()
 
             if self.writer is not None:
                 state_dict = self.scenario.state_dict_common()
                 self.writer.write_state_dict_common(state_dict, step=self.step)
+                
+                # Salvar point cloud do lidar (se disponível)
+                state_point_cloud = self.scenario.state_dict_point_cloud()
+                if state_point_cloud:
+                    self.writer.write_state_dict_point_cloud(state_point_cloud, step=self.step)
                 self.step += 1
                 self.recording_time += step_size
                 if self.step % 15 == 0:
@@ -223,35 +248,49 @@ class MobilityGenExtension(omni.ext.IExt):
 
     def build_scenario(self):
         async def _build_scenario_async():
+            logger.info("=== _build_scenario_async INICIANDO ===")
             self.clear_recording()
             self.clear_scenario()
 
             config = self.create_config()
+            logger.info(f"Config criada: robot={config.robot_type}, scenario={config.scenario_type}")
 
             self.config = config
+            logger.info("Chamando build_scenario_from_config...")
             self.scenario = await build_scenario_from_config(config)
+            logger.info(f"Cenário construído: {self.scenario}")
 
+            logger.debug("Desenhando occupancy map...")
             self.draw_occ_map()
 
+            logger.debug("Obtendo world e resetando...")
             world = get_world()
             await world.reset_async()
+            logger.debug("World resetado")
 
+            logger.info("Chamando scenario.reset()...")
             self.scenario.reset()
+            logger.info("Cenário resetado")
 
             # Habilitar debug draw do Lidar (se disponível)
-            if hasattr(self.scenario, 'robot') and self.scenario.robot is not None:
-                if hasattr(self.scenario.robot, 'lidar_sensor') and self.scenario.robot.lidar_sensor is not None:
-                    self.scenario.robot.lidar_sensor.enable_debug_draw(color=(0.0, 1.0, 0.0, 1.0))
+            #if hasattr(self.scenario, 'robot') and self.scenario.robot is not None:
+            #    if hasattr(self.scenario.robot, 'lidar_sensor') and self.scenario.robot.lidar_sensor is not None:
+            #       self.scenario.robot.lidar_sensor.enable_debug_draw(color=(0.0, 1.0, 0.0, 1.0))
 
+            logger.info("Adicionando physics callback...")
             world.add_physics_callback("mobility_gen_physics", self.on_physics)
             self._physics_callback_registered = True
+            logger.info("Physics callback registrado")
 
             # cache stage
             self.cached_stage_path = os.path.join(tempfile.mkdtemp(), "stage.usd")
             save_stage(self.cached_stage_path)
+            logger.info(f"Stage salvo em: {self.cached_stage_path}")
 
             if self.recording_enabled:
                 self.start_new_recording()
+            
+            logger.info("=== _build_scenario_async CONCLUÍDO ===")
 
             # self.scenario.save(path)
 

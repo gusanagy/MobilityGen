@@ -191,7 +191,18 @@ class Module:
         Returns:
             _type_: The module's state dictionary, including only common types.
         """
-        return self.state_dict(prefix, exclude_tags=["rgb", "segmentation", "depth", "normals"])
+        return self.state_dict(prefix, exclude_tags=["rgb", "segmentation", "depth", "normals", "point_cloud"])
+
+    def state_dict_point_cloud(self, prefix: str = ""):
+        """Get the state dictionary, including only values tagged "point_cloud" (lidar)
+
+        Args:
+            prefix (str, optional): A prefix for state value names. Defaults to "".
+
+        Returns:
+            _type_: The module's state dictionary, including only lidar point cloud data.
+        """
+        return self.state_dict(prefix, include_tags=["point_cloud"])
 
     def state_dict_rgb(self, prefix: str = ""):
         """Get the state dictionary, including only values tagged "rgb"

@@ -42,8 +42,10 @@ class Reader:
         self.depth_folders = glob.glob(os.path.join(self.recording_path, "state", "depth", "*"))
         self.normals_folders = glob.glob(os.path.join(self.recording_path, "state", "normals", "*"))
         self.bev_folders = glob.glob(os.path.join(self.recording_path, "state", "bev", "*"))
+        self.point_cloud_folders = glob.glob(os.path.join(self.recording_path, "state", "point_cloud", "*"))
 
         self.bev_names = [os.path.basename(folder) for folder in self.bev_folders]
+        self.point_cloud_names = [os.path.basename(folder) for folder in self.point_cloud_folders]
         self.rgb_names = [os.path.basename(folder) for folder in self.rgb_folders]
         self.segmentation_names = [os.path.basename(folder) for folder in self.segmentation_folders]
         self.depth_names = [os.path.basename(folder) for folder in self.depth_folders]
@@ -81,10 +83,14 @@ class Reader:
         )
         return data
     
-    def read_bev(self, name: str, index: int):
+    def read_lidar(self, name: str, index: int):
         step = self.steps[index]
-        image = PIL.Image.open(os.path.join(self.recording_path, "state", "bev", name, f"{step:08d}.png"))
-        return np.asarray(image)
+        npy_path = os.path.join(self.recording_path, "state", "lidar", name, f"{step:08d}.npy")
+        if os.path.exists(npy_path):
+            point_cloud = np.load(npy_path)
+            return point_cloud
+        else:
+            return None
 
     def read_state_dict_segmentation(self, index: int):
         segmentation_dict = OrderedDict()
@@ -118,13 +124,16 @@ class Reader:
         state_dict = np.load(os.path.join(self.recording_path, "state", "common", f"{step:08d}.npy"), allow_pickle=True).item()
         return state_dict
 
-    def read_state_dict_bev(self, index:int):
-        bev_dict = OrderedDict()
+
+    def read_state_dict_point_cloud(self, index: int):
+        """Lê os dados de point cloud do lidar salvos como .npy"""
+        point_cloud_dict = OrderedDict()
         step = self.steps[index]
-        for name in self.bev_names:
-            image = PIL.Image.open(os.path.join(self.recording_path, "state", "bev", name, f"{step:08d}.png"))
-            bev_dict[name] = np.asarray(image)
-        return bev_dict
+        for name in self.point_cloud_names:
+            npy_path = os.path.join(self.recording_path, "state", "point_cloud", name, f"{step:08d}.npy")
+            if os.path.exists(npy_path):
+                point_cloud_dict[name] = np.load(npy_path)
+        return point_cloud_dict
 
     def read_state_dict(self, index: int):
 
@@ -134,10 +143,12 @@ class Reader:
         depth_dict = self.read_state_dict_depth(index)
         normals_dict = self.read_state_dict_normals(index)
         bev_dict = self.read_state_dict_bev(index)
+        point_cloud_dict = self.read_state_dict_point_cloud(index)
 
         full_dict = OrderedDict()
         full_dict.update(state_dict)
         full_dict.update(bev_dict)
+        full_dict.update(point_cloud_dict)
         full_dict.update(rgb_dict)
         full_dict.update(segmentation_dict)
         full_dict.update(depth_dict)

@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+logger = logging.getLogger("MobilityGen.scenarios")
 
 import numpy as np
 from typing import Tuple
@@ -66,14 +68,28 @@ class KeyboardTeleoperationScenario(Scenario):
         super().__init__(robot, occupancy_map)
         self.keyboard = inputs.Keyboard()
         self.pose_sampler = pose_samplers.UniformPoseSampler()
+        self._step_count = 0
 
     def reset(self):
+        logger.info("KeyboardTeleoperationScenario.reset()")
         pose = self.pose_sampler.sample(self.buffered_occupancy_map)
+        logger.debug(f"Pose amostrada: x={pose.x:.2f}, y={pose.y:.2f}")
         self.robot.set_pose_2d(pose)
+        logger.info("Reset concluído")
 
     def step(self, step_size):
-
-        self.update_state()
+        self._step_count += 1
+        
+        if self._step_count == 1:
+            logger.info("KeyboardTeleoperationScenario: Primeiro step!")
+        
+        try:
+            self.update_state()
+        except Exception as e:
+            logger.error(f"Erro em update_state(): {e}")
+            import traceback
+            traceback.print_exc()
+            return True
 
         buttons = self.keyboard.buttons.get_value()
 
@@ -91,9 +107,19 @@ class KeyboardTeleoperationScenario(Scenario):
 
         self.robot.action.set_value(np.array([linear_velocity, angular_velocity]))
 
-        self.robot.write_action(step_size)
+        try:
+            self.robot.write_action(step_size)
+        except Exception as e:
+            logger.error(f"Erro em write_action(): {e}")
+            import traceback
+            traceback.print_exc()
 
-        self.update_state()
+        try:
+            self.update_state()
+        except Exception as e:
+            logger.error(f"Erro em update_state() (2): {e}")
+            import traceback
+            traceback.print_exc()
 
         return True
     
@@ -193,29 +219,44 @@ class RandomPathFollowingScenario(Scenario):
         self.collision_occupancy_map = occupancy_map.buffered(robot.occupancy_map_collision_radius)
 
     def set_random_target_path(self):
+        logger.debug("set_random_target_path: Iniciando...")
         current_pose = self.robot.get_pose_2d()
+        logger.debug(f"Pose atual: x={current_pose.x:.2f}, y={current_pose.y:.2f}")
 
         start_px = self.occupancy_map.world_to_pixel_numpy(np.array([
             [current_pose.x, current_pose.y]
         ]))
         freespace = self.buffered_occupancy_map.freespace_mask()
+        logger.debug(f"Freespace shape: {freespace.shape}, total livre: {np.sum(freespace)}")
 
         start = (start_px[0, 1], start_px[0, 0])
+        logger.debug(f"Start pixel: {start}")
 
+        logger.info("Chamando generate_paths (pode demorar em mapas grandes)...")
         output = generate_paths(start, freespace)
+        logger.info("generate_paths concluído")
+        
+        logger.debug("Amostrando end point...")
         end = output.sample_random_end_point()
+        logger.debug(f"End point: {end}")
+        
         path = output.unroll_path(end)
         path = path[:, ::-1] # y,x -> x,y coordinates
         path = self.occupancy_map.pixel_to_world_numpy(path)
         self.target_path.set_value(path)
         self.target_path_helper = PathHelper(path)
+        logger.debug(f"set_random_target_path: Concluído, path length={len(path)}")
 
     def reset(self):
+        logger.info("RandomPathFollowingScenario.reset() iniciando...")
         self.robot.action.set_value(np.zeros(2))
+        logger.debug("Amostrando pose inicial...")
         pose = self.pose_sampler.sample(self.buffered_occupancy_map)
+        logger.debug(f"Pose amostrada: x={pose.x:.2f}, y={pose.y:.2f}, theta={pose.theta:.2f}")
         self.robot.set_pose_2d(pose)
         self.set_random_target_path()
         self.is_alive = True
+        logger.info("RandomPathFollowingScenario.reset() concluído")
     
     def step(self, step_size: float):
 
@@ -259,55 +300,4 @@ class RandomPathFollowingScenario(Scenario):
         self.robot.write_action(step_size=step_size)
 
         return self.is_alive
-    ###############################################
-    #novo cenario de coleta de dados se necessario#
-    ###############################################
-    # @SCENARIOS.register()
-    # class KeyboardTeleoperationWithSensors(Scenario):
-    #     """
-    #     Envolve o KeyboardTeleoperationScenario: reaproveita teleop e só monta câmeras + writer.
-    #     """
-    #     def __init__(self, robot: Robot, occupancy_map: OccupancyMap,
-    #                 mount_bev=True, mount_rs=True, mount_zed=True, out_dir="/tmp/mg_dataset"):
-    #         super().__init__(robot, occupancy_map)
-    #         # instancia o cenário base (mesma assinatura)
-    #         self.base = KeyboardTeleoperationScenario(robot, occupancy_map)
-    #         self.mount_bev = mount_bev
-    #         self.mount_rs = mount_rs
-    #         self.mount_zed = mount_zed
-    #         self.out_dir = out_dir
-    #         self._writer = None
-    #         self._cam_paths = []
-
-    #     def reset(self):
-    #         self.base.reset()  # isso chama pose sampler e etc.
-
-    #         # monta câmeras no robô (métodos da sua classe)
-    #         if self.mount_bev:
-    #             self._cam_paths.append(self.robot.mount_bev_camera_topdown())
-    #         if self.mount_rs:
-    #             self._cam_paths.append(self.robot.mount_realsense_rgbd())
-    #         if self.mount_zed:
-    #             l, r = self.robot.mount_zed_stereo()
-    #             self._cam_paths += [l, r]
-
-    #         # liga o writer do Replicator
-    #         self._writer = rep.WriterRegistry.get("BasicWriter")
-    #         self._writer.initialize(
-    #             output_dir=self.out_dir,
-    #             rgb=True,
-    #             semantic_segmentation=True,
-    #             instance_segmentation=True,
-    #             distance_to_camera=True,
-    #         )
-    #         with rep.trigger.on_frame(num_frames=-1):
-    #             prims = []
-    #             for p in self._cam_paths:
-    #                 if isinstance(p, tuple):
-    #                     prims += [rep.get.prims(path=p[0]), rep.get.prims(path=p[1])]
-    #                 else:
-    #                     prims.append(rep.get.prims(path=p))
-    #             self._writer.attach(prims)
-
-    #     def step(self, step_size):
-    #         return self.base.step(step_size)
+    

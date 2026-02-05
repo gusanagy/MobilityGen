@@ -794,8 +794,8 @@ class Jetbot_SCamera(WheeledRobot):
    
 # ===================== Ações ================================
     # ===== Teleop =====
-    keyboard_linear_velocity_gain: float = 5.25
-    keyboard_angular_velocity_gain: float = 10.0
+    keyboard_linear_velocity_gain: float = 10.25
+    keyboard_angular_velocity_gain: float = 30.0
     gamepad_linear_velocity_gain: float = 0.25
     gamepad_angular_velocity_gain: float = 1.0
 
