@@ -19,6 +19,11 @@ import glob
 import numpy as np
 import os
 from collections import OrderedDict
+import json
+try:
+    import open3d as o3d
+except Exception:
+    o3d = None
 
 
 from omni.ext.mobility_gen.occupancy_map import OccupancyMap
@@ -41,11 +46,13 @@ class Reader:
         self.segmentation_folders = glob.glob(os.path.join(self.recording_path, "state", "segmentation", "*"))
         self.depth_folders = glob.glob(os.path.join(self.recording_path, "state", "depth", "*"))
         self.normals_folders = glob.glob(os.path.join(self.recording_path, "state", "normals", "*"))
+        self.pointcloud_folders = glob.glob(os.path.join(self.recording_path, "state", "pointcloud", "*"))
 
         self.rgb_names = [os.path.basename(folder) for folder in self.rgb_folders]
         self.segmentation_names = [os.path.basename(folder) for folder in self.segmentation_folders]
         self.depth_names = [os.path.basename(folder) for folder in self.depth_folders]
         self.normals_names = [os.path.basename(folder) for folder in self.normals_folders]
+        self.pointcloud_names = [os.path.basename(folder) for folder in self.pointcloud_folders]
 
     def read_config(self) -> Config:
         with open(os.path.join(self.recording_path, "config.json"), 'r') as f:
@@ -106,6 +113,64 @@ class Reader:
             normals_dict[name] = data
         return normals_dict
 
+    def read_pointcloud(self, name: str, index: int):
+        step = self.steps[index]
+        npy_path = os.path.join(self.recording_path, "state", "pointcloud", name, f"{step:08d}.npy")
+        ply_path = os.path.join(self.recording_path, "state", "pointcloud", name, f"{step:08d}.ply")
+        pcd_path = os.path.join(self.recording_path, "state", "pointcloud", name, f"{step:08d}.pcd")
+        if os.path.exists(npy_path):
+            return np.load(npy_path, allow_pickle=True)
+        if os.path.exists(ply_path) or os.path.exists(pcd_path):
+            # Prefer open3d if available for robust PLY/PCD reading
+            if o3d is not None:
+                try:
+                    read_path = ply_path if os.path.exists(ply_path) else pcd_path
+                    pcd = o3d.io.read_point_cloud(read_path)
+                    pts = np.asarray(pcd.points)
+                    # attempt to read colors
+                    if pcd.has_colors():
+                        cols = np.asarray(pcd.colors)
+                        # colors 0..1 -> convert to 0..255 for compatibility with writer's assumptions
+                        if cols.max() <= 1.0:
+                            cols = (cols * 255.0).astype(np.float32)
+                        pts = np.hstack([pts, cols])
+                    return pts
+                except Exception:
+                    pass
+            # Fallback minimal ASCII PLY reader (assumes x y z [intensity])
+            try:
+                with open(ply_path, 'r') as f:
+                    # skip header
+                    line = f.readline()
+                    while line and 'end_header' not in line:
+                        line = f.readline()
+                    # read the remaining lines as floats
+                    data = np.loadtxt(f)
+                    if data.ndim == 1:
+                        data = data.reshape(-1, 3)
+                    return data
+            except Exception:
+                return None
+        return None
+
+    def read_pointcloud_metadata(self, name: str, index: int):
+        step = self.steps[index]
+        meta_path = os.path.join(self.recording_path, "state", "pointcloud", name, f"{step:08d}_meta.json")
+        if not os.path.exists(meta_path):
+            return None
+        try:
+            with open(meta_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def read_state_dict_pointcloud(self, index: int):
+        pc_dict = OrderedDict()
+        for name in self.pointcloud_names:
+            data = self.read_pointcloud(name, index)
+            pc_dict[name] = data
+        return pc_dict
+
     def read_state_dict_common(self, index: int):
         step = self.steps[index]
         state_dict = np.load(os.path.join(self.recording_path, "state", "common", f"{step:08d}.npy"), allow_pickle=True).item()
@@ -118,6 +183,7 @@ class Reader:
         segmentation_dict = self.read_state_dict_segmentation(index)
         depth_dict = self.read_state_dict_depth(index)
         normals_dict = self.read_state_dict_normals(index)
+        pc_dict = self.read_state_dict_pointcloud(index)
 
         full_dict = OrderedDict()
         full_dict.update(state_dict)
@@ -125,6 +191,7 @@ class Reader:
         full_dict.update(segmentation_dict)
         full_dict.update(depth_dict)
         full_dict.update(normals_dict)
+        full_dict.update(pc_dict)
 
         return full_dict
     

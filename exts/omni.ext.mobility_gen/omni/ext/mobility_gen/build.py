@@ -23,7 +23,6 @@ from isaacsim.core.utils.stage import add_reference_to_stage
 
 from omni.ext.mobility_gen.occupancy_map import OccupancyMap
 from omni.ext.mobility_gen.config import Config
-from omni.ext.mobility_gen.utils.occupancy_map_utils import occupancy_map_generate_from_prim_async
 from omni.ext.mobility_gen.utils.global_utils import new_stage, new_world, set_viewport_camera
 from omni.ext.mobility_gen.scenarios import Scenario, SCENARIOS
 from omni.ext.mobility_gen.robots import ROBOTS
@@ -52,8 +51,16 @@ def load_scenario(path: str) -> Scenario:
 
 
 async def build_scenario_from_config(config: Config):
+    from omni.ext.mobility_gen.utils.occupancy_map_utils import occupancy_map_generate_from_prim_async
+
     robot_type = ROBOTS.get(config.robot_type)
     scenario_type = SCENARIOS.get(config.scenario_type)
+    # Validate config.scene_usd early to provide a helpful error when
+    # the UI hasn't provided a world path. This prevents confusing
+    # downstream failures when add_reference_to_stage is called with
+    # an empty string.
+    if not getattr(config, 'scene_usd', None):
+        raise RuntimeError("build_scenario_from_config: 'scene_usd' is empty. Please set the USD Path / URL in the UI before clicking Build.")
     new_stage()
     world = new_world(physics_dt=robot_type.physics_dt)
     await world.initialize_simulation_context_async()

@@ -236,6 +236,17 @@ class Module:
             _type_: The module's state dictionary, including only values tagged "normals".
         """
         return self.state_dict(prefix, include_tags=["normals"])
+    
+    def state_dict_pointcloud(self, prefix: str = ""):
+        """Get the state dictionary, including only values tagged "pointcloud"
+
+        Args:
+            prefix (str, optional): A prefix for state value names. Defaults to "".
+
+        Returns:
+            Dict[str, any]: The module's state dictionary, including only values tagged "pointcloud".
+        """
+        return self.state_dict(prefix, include_tags=["pointcloud"])
 
     def enable_rgb_rendering(self):
         """Enable RGB rendering for this module.

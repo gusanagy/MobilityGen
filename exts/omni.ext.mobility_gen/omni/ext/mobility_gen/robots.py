@@ -58,6 +58,8 @@ from omni.ext.mobility_gen.sensors import (
     ZedStereoCamera,
     #nuscenes
 )
+# convenience imports for the Forklift builder
+from omni.ext.mobility_gen.sensors import Camera, Lidar, _quat_from_euler_xyz
 #lidar 
 
 # dentro da classe ForkliftC
@@ -230,17 +232,40 @@ class Robot(Module):
         super().write_replay_data()
 
     def set_pose_2d(self, pose: Pose2d):
-        self.articulation_view.initialize()
-        self.robot.set_world_velocity(np.array([0., 0., 0., 0., 0., 0.]))
-        self.robot.post_reset()
-        position, orientation = self.robot.get_local_pose()
-        position[0] = pose.x
-        position[1] = pose.y
-        position[2] = self.z_offset
-        orientation = rot_utils.euler_angles_to_quats(np.array([0., 0., pose.theta]))
-        self.robot.set_local_pose(
-            position, orientation
-        )
+        # Defensive: articulation_view / internal ISAAC state may not be
+        # fully initialized during some startup sequences. Wrap calls
+        # that can raise into try/except so the extension does not crash
+        # unnecessarily; best-effort to set pose.
+        try:
+            if self.articulation_view is not None:
+                try:
+                    self.articulation_view.initialize()
+                except Exception:
+                    # continue even if initialize fails; we may still set pose
+                    pass
+        except Exception:
+            pass
+
+        try:
+            # zero velocities before teleporting pose
+            try:
+                self.robot.set_world_velocity(np.array([0., 0., 0., 0., 0., 0.]))
+            except Exception:
+                pass
+
+            # set local pose using robot API; wrap in try to avoid bubbling ISAAC internals
+            try:
+                position, orientation = self.robot.get_local_pose()
+                position[0] = pose.x
+                position[1] = pose.y
+                position[2] = self.z_offset
+                orientation = rot_utils.euler_angles_to_quats(np.array([0., 0., pose.theta]))
+                self.robot.set_local_pose(position, orientation)
+            except Exception:
+                # last-resort: ignore failures here (caller should handle robot availability)
+                pass
+        except Exception:
+            pass
     
     def get_pose_2d(self) -> Pose2d:
         position, orientation = self.robot.get_local_pose()
@@ -473,6 +498,10 @@ class FourWheelRearSteerRobot_V1(Robot):
         self._auto_done = False
         self._auto_frames = 45
         self._frame = 0
+        self._rebind_warmup_frames = 0
+        self._warned_missing_rear = False
+        self._warned_missing_steer = False
+        self._warned_transient_reset = False
 
     # ---------- Build ----------
     @classmethod
@@ -497,6 +526,19 @@ class FourWheelRearSteerRobot_V1(Robot):
         )
 
     # ---------- Helpers ----------
+    def _get_dof_names(self) -> List[str]:
+        names = []
+        for attr in ("get_dof_names", "dof_names", "_dof_names"):
+            if hasattr(self.articulation_view, attr):
+                try:
+                    val = getattr(self.articulation_view, attr)
+                    names = list(val() if callable(val) else val)
+                    if names:
+                        return names
+                except Exception:
+                    pass
+        return names
+
     def _resolve_indices(self, names: List[str]) -> np.ndarray:
         idx = []
         for n in names:
@@ -504,16 +546,25 @@ class FourWheelRearSteerRobot_V1(Robot):
             except Exception: idx.append(-1)
         return np.asarray(idx, np.int32)
 
+    def _auto_find_rear_wheel_dofs(self) -> Optional[List[str]]:
+        names = self._get_dof_names()
+        if not names:
+            return None
+
+        def is_rear_wheel(name: str) -> bool:
+            s = name.lower()
+            return (("rear" in s or "back" in s) and ("wheel" in s))
+
+        cands = [n for n in names if is_rear_wheel(n)]
+        lefts = [n for n in cands if "left" in n.lower()]
+        rights = [n for n in cands if "right" in n.lower()]
+        if lefts and rights:
+            return [lefts[0], rights[0]]
+        return cands[:2] if len(cands) >= 2 else None
+
     def _auto_find_rear_steer_dofs(self) -> Optional[List[str]]:
         # tenta localizar DOFs traseiros de esterço por nome
-        names = []
-        for attr in ("get_dof_names", "dof_names", "_dof_names"):
-            if hasattr(self.articulation_view, attr):
-                try:
-                    val = getattr(self.articulation_view, attr)
-                    names = list(val() if callable(val) else val); break
-                except Exception:
-                    pass
+        names = self._get_dof_names()
         if not names:
             return None
         def is_steer(n: str) -> bool:
@@ -550,15 +601,36 @@ class FourWheelRearSteerRobot_V1(Robot):
             except Exception:
                 pass
 
-    def _ensure_indices_limits_and_drive(self):
-        try: self.articulation_view.initialize()
-        except Exception: pass
+    def _ensure_indices_limits_and_drive(self) -> bool:
+        try:
+            self.articulation_view.initialize()
+        except Exception:
+            # Em alguns frames (especialmente após reset), initialize pode falhar
+            # mesmo com índices já válidos. Nesses casos, seguimos.
+            if self._rear_idx is not None and self._steer_idx is not None:
+                return True
 
         # rodas traseiras
         if self._rear_idx is None:
-            idx = self._resolve_indices(self.rear_wheel_dof_names)
+            rear_names = list(self.rear_wheel_dof_names)
+            idx = self._resolve_indices(rear_names)
             if (idx < 0).any():
-                raise RuntimeError(f"[RearSteer] Juntas traseiras não encontradas: {self.rear_wheel_dof_names}")
+                auto = self._auto_find_rear_wheel_dofs()
+                if auto:
+                    rear_names = auto
+                    idx = self._resolve_indices(rear_names)
+            if (idx < 0).any():
+                if not self._warned_missing_rear:
+                    available = self._get_dof_names()
+                    print(
+                        "[FourWheelRearSteerRobot_V1] rear wheel indices not found "
+                        f"(resolved {idx}) for names {rear_names}. "
+                        f"Available DOFs (first 20): {available[:20]}"
+                    )
+                    self._warned_missing_rear = True
+                return False
+            self._warned_missing_rear = False
+            self.rear_wheel_dof_names = rear_names
             self._rear_idx = idx
 
         # direção traseira
@@ -571,7 +643,16 @@ class FourWheelRearSteerRobot_V1(Robot):
                     steer_names = auto
                     idx = self._resolve_indices(steer_names)
             if (idx < 0).any():
-                raise RuntimeError(f"[RearSteer] Juntas de direção não encontradas. Ajuste steering_dof_names. (atual={self.steering_dof_names})")
+                if not self._warned_missing_steer:
+                    available = self._get_dof_names()
+                    print(
+                        "[FourWheelRearSteerRobot_V1] steer indices not found "
+                        f"(resolved {idx}) for names {steer_names}. "
+                        f"Available DOFs (first 20): {available[:20]}"
+                    )
+                    self._warned_missing_steer = True
+                return False
+            self._warned_missing_steer = False
             self.steering_dof_names = steer_names
             self._steer_idx = idx
 
@@ -609,27 +690,88 @@ class FourWheelRearSteerRobot_V1(Robot):
                 )
         except Exception:
             pass
+        return True
     # ---------- ciclo de vida ----------
     def post_reset(self):
-        super().post_reset()
-        self._ensure_indices_limits_and_drive()
         self._last_cmd = None
         self._auto_done = False
         self._frame = 0
+        self._rebind_warmup_frames = max(self._rebind_warmup_frames, 60)
+        self._warned_transient_reset = False
+        try:
+            self.articulation_view.initialize()
+        except Exception:
+            pass
     # ---------- controle ----------
     def write_action(self, step_size: float):
-        # 1) rodas traseiras: ω = v/R
-        wheel_action, steer_targets = self.controller.forward(self.action.get_value())
-        self.robot.apply_wheel_actions(wheel_action)
+        def _is_transient_articulation_error(exc: Exception) -> bool:
+            text = str(exc)
+            return ("NoneType" in text and "joint_positions" in text) or (
+                "Physics Simulation View is not created yet" in text
+            )
+
+        # após reset, dê alguns frames para a physics view/articulation controller subir
+        if self._rebind_warmup_frames > 0:
+            self._rebind_warmup_frames -= 1
+
+        if not self._ensure_indices_limits_and_drive():
+            return
+
+        # 1) rodas traseiras
+        action = self.action.get_value()
+        if action is None or len(action) < 2:
+            return
+        v_mps = float(action[0])
+        steer_cmd = float(action[1])
+        wheel_action, steer_targets = self.controller.forward(np.array([v_mps, steer_cmd], dtype=np.float32))
+        try:
+            self.robot.apply_wheel_actions(wheel_action)
+        except Exception as exc:
+            if _is_transient_articulation_error(exc):
+                if not self._warned_transient_reset:
+                    print(
+                        "[FourWheelRearSteerRobot_V1] transient articulation state after reset; "
+                        "waiting for physics view rebind..."
+                    )
+                    self._warned_transient_reset = True
+                self._rear_idx = None
+                self._steer_idx = None
+                self._rebind_warmup_frames = max(self._rebind_warmup_frames, 20)
+                return
+            # fallback: aplica velocidade direto no articulation_view
+            try:
+                omega = v_mps / max(float(self.wheel_radius), 1e-6)
+                wheel_vel = np.array([omega, omega], dtype=np.float32)
+                self.articulation_view.set_joint_velocity_targets(
+                    velocities=wheel_vel,
+                    joint_indices=self._rear_idx,
+                )
+            except Exception as exc2:
+                if _is_transient_articulation_error(exc2):
+                    self._rear_idx = None
+                    self._steer_idx = None
+                    self._rebind_warmup_frames = max(self._rebind_warmup_frames, 20)
+                    return
+                print(f"[FourWheelRearSteerRobot_V1] wheel command failed: {exc2}")
+                return
 
         # 2) direção traseira: δ igual nos dois lados
-        self._ensure_indices_limits_and_drive()
         steer_targets = (np.asarray(self.steering_axis_signs, np.float32) * steer_targets).astype(np.float32)
         lim = float(self.effective_steer_limit)
         steer_targets = np.clip(steer_targets, -lim, +lim).astype(np.float32)
-        self.articulation_view.set_joint_position_targets(
-            positions=steer_targets, joint_indices=self._steer_idx
-        )
+        try:
+            self.articulation_view.set_joint_position_targets(
+                positions=steer_targets, joint_indices=self._steer_idx
+            )
+        except Exception as exc:
+            if _is_transient_articulation_error(exc):
+                self._rear_idx = None
+                self._steer_idx = None
+                self._rebind_warmup_frames = max(self._rebind_warmup_frames, 20)
+                return
+            print(f"[FourWheelRearSteerRobot_V1] set_joint_position_targets failed: {exc}")
+            return
+        self._warned_transient_reset = False
 
         # 3) auto calibra sinais nos primeiros frames (se medição divergir do comando)
         try:
@@ -656,6 +798,16 @@ class FourWheelRearSteerRobot_V1(Robot):
                 self._auto_done = True
 
         self._last_cmd = steer_targets.copy()
+
+        # Debug: print indices and commands (small-volume) so we can trace when wheels not moving
+        try:
+            print(
+                "[FourWheelRearSteerRobot_V1] "
+                f"rear_idx={self._rear_idx}, steer_idx={self._steer_idx}, "
+                f"v_mps={v_mps:.3f}, steer_cmd={steer_cmd:.3f}, steer_targets={steer_targets}"
+            )
+        except Exception:
+            pass
 
 
 #  @ROBOTS.register()
@@ -1318,6 +1470,468 @@ class SpotRobot(IsaacLabRobot):
     #Colocar aqui a nova definição do robo forklift# Preliminar faltam ajustes e testes#
     ####################################################################################
 
+@ROBOTS.register()
+class ForkliftRobot(FourWheelRearSteerRobot_V1):
+    """
+    Concrete Forklift robot that attaches:
+      - front stereo camera (ZedStereoCamera)
+      - left and right fisheye cameras (simple Camera wrappers)
+      - 360 3D Lidar (Lidar wrapper)
+
+    Provides a simple control-mode selector: 'manual' or 'auto'.
+    In 'auto' mode the robot follows a 2D path (list of (x,y) world points)
+    using a lightweight pure-pursuit style controller. This keeps the
+    mobility_gen recording APIs compatible because sensors expose
+    the same Buffers (tags) used by the writer/reader.
+    """
+
+    # auto navigation defaults
+    auto_max_speed: float = 1.0
+    auto_ang_gain: float = 1.5
+    auto_arrival_tol: float = 0.25
+
+    def __init__(self, prim_path: str, robot: _WheeledRobot, articulation_view: _ArticulationView, front_camera: Sensor | None = None):
+        super().__init__(prim_path=prim_path, robot=robot, articulation_view=articulation_view, front_camera=front_camera)
+        # sensor placeholders
+        self.front_stereo: Optional[Sensor] = None
+        self.fisheye_left: Optional[Camera] = None
+        self.fisheye_right: Optional[Camera] = None
+        self.lidar: Optional[object] = None
+
+        # control mode and path
+        self.control_mode: str = "manual"  # or 'auto'
+        self._auto_path: Optional[List[Tuple[float, float]]] = None
+        self._auto_idx: int = 0
+
+    @classmethod
+    def build(cls, prim_path: str) -> "ForkliftRobot":
+        # Use base builder to create articulation and robot
+        base = super().build(prim_path)
+        # attach extra sensors under <prim_path>/sensors
+        try:
+            # front stereo
+            from omni.ext.mobility_gen.sensors import ZedStereoCamera, Camera, Lidar
+            front_path = os.path.join(prim_path, "sensors/front_stereo")
+            base.front_stereo = ZedStereoCamera.build(front_path)
+
+            # left fisheye
+            left_path = os.path.join(prim_path, "sensors/fisheye_left")
+            base.fisheye_left = Camera(left_path, (640, 480))
+            # position/rotate to left
+            try:
+                from omni.ext.mobility_gen.sensors import _xform_translate, _xform_orient_quat
+                _xform_translate(left_path, (1.0, -0.45, 1.2))
+                qw, qx, qy, qz = _quat_from_euler_xyz(0.0, 0.0, 20.0)
+                _xform_orient_quat(left_path, (qw, qx, qy, qz))
+            except Exception:
+                pass
+
+            # right fisheye
+            right_path = os.path.join(prim_path, "sensors/fisheye_right")
+            base.fisheye_right = Camera(right_path, (640, 480))
+            try:
+                _xform_translate(right_path, (1.0, 0.45, 1.2))
+                qw, qx, qy, qz = _quat_from_euler_xyz(0.0, 0.0, -20.0)
+                _xform_orient_quat(right_path, (qw, qx, qy, qz))
+            except Exception:
+                pass
+
+            # lidar
+            lidar_path = os.path.join(prim_path, "sensors/lidar")
+            base.lidar = Lidar(lidar_path)
+            try:
+                base.lidar.enable_lidar()
+            except Exception:
+                # best-effort
+                pass
+
+            # enable rgb rendering on cameras so writer picks up frames
+            try:
+                if hasattr(base.front_stereo, "left"):
+                    base.front_stereo.left.enable_rgb_rendering()
+                    base.front_stereo.right.enable_rgb_rendering()
+            except Exception:
+                pass
+            try:
+                base.fisheye_left.enable_rgb_rendering()
+                base.fisheye_right.enable_rgb_rendering()
+            except Exception:
+                pass
+        except Exception:
+            # sensors are optional at build-time if environment lacks assets
+            pass
+
+        return base
+
+    def set_control_mode(self, mode: str):
+        assert mode in ("manual", "auto"), "mode must be 'manual' or 'auto'"
+        self.control_mode = mode
+
+    def set_auto_path(self, path: List[Tuple[float, float]]):
+        """Provide a list of (x,y) world points for the auto controller to follow."""
+        self._auto_path = path
+        self._auto_idx = 0
+
+    def plan_path_from_occupancy_map(self, occupancy_map) -> List[Tuple[float, float]]:
+        """Plan a path using the repository's path_planner and set it as the auto path.
+
+        This is a convenience wrapper so scenarios can call:
+            robot.plan_path_from_occupancy_map(occupancy_map)
+
+        The method does a best-effort import of the planner (it may require
+        that the `path_planner` package is available in sys.path or that
+        `scenarios.py` has inserted the repo path into sys.path as done in
+        the project). If the planner is unavailable a RuntimeError is raised.
+        """
+        try:
+            from mobility_gen_path_planner import generate_paths
+        except Exception as e:
+            raise RuntimeError("mobility_gen path_planner not importable in this Python environment") from e
+
+        # current robot pose in world
+        pose = self.get_pose_2d()
+        # convert to pixel coordinates for planner
+        start_px = occupancy_map.world_to_pixel_numpy(np.array([[pose.x, pose.y]]))
+        # planner expects (row,col) as (y,x) ordering; follow the convention used
+        # in the existing scenarios code (swap indices)
+        start = (int(start_px[0, 1]), int(start_px[0, 0]))
+
+        freespace = occupancy_map.buffered_meters(self.occupancy_map_radius).freespace_mask()
+        output = generate_paths(start, freespace)
+        end = output.sample_random_end_point()
+        path_px = output.unroll_path(end)
+        # planner returns (y,x) pixel coords -> swap to (x,y)
+        path_px = path_px[:, ::-1]
+        # convert pixel path to world coords and set as auto path
+        path_world = occupancy_map.pixel_to_world_numpy(path_px)
+        path_list = [(float(x), float(y)) for x, y in path_world]
+        self.set_auto_path(path_list)
+        return path_list
+
+    def _compute_auto_command(self) -> Tuple[float, float]:
+        """Simple go-to-point controller returning (v_mps, delta_rad)."""
+        if (not self._auto_path) or (self._auto_idx >= len(self._auto_path)):
+            return (0.0, 0.0)
+
+        # current pose
+        pose = self.get_pose_2d()
+        tx, ty = self._auto_path[self._auto_idx]
+        dx = tx - pose.x
+        dy = ty - pose.y
+        dist = math.hypot(dx, dy)
+        ang_to_target = math.atan2(dy, dx)
+        # heading error
+        dtheta = (ang_to_target - pose.theta + math.pi) % (2 * math.pi) - math.pi
+
+        # arrival
+        if dist < float(self.auto_arrival_tol):
+            self._auto_idx += 1
+            return (0.0, 0.0)
+
+        v = float(np.clip(dist * 0.6, -self.auto_max_speed, self.auto_max_speed))
+        delta = float(np.clip(self.auto_ang_gain * dtheta, -self.max_steer_angle, +self.max_steer_angle))
+        return (v, delta)
+
+    def write_action(self, step_size: float):
+        # if auto mode, compute and overwrite action
+        if self.control_mode == "auto":
+            cmd = self._compute_auto_command()
+            self.action.set_value(np.array([cmd[0], cmd[1]], dtype=np.float32))
+
+        # delegate to base implementation which applies wheel/steer
+        super().write_action(step_size)
 
 
 
+
+@ROBOTS.register()
+class ForkliftRobotV3(FourWheelRearSteerRobot_V1):
+    """
+    Versão V3 simplificada do Forklift:
+    - Herda diretamente de Robot.
+    - Usa um comando de ação compatível com os cenários de empilhadeira:
+        action = [v_mps, delta_rad]
+      onde v_mps é a velocidade linear desejada e delta_rad é o ângulo de direção
+      traseiro (mesmo sinal nas duas juntas de direção).
+    - Controla as rodas e juntas traseiras via ArticulationView (sem editar prims USD).
+    - Anexa:
+        - Câmera estéreo frontal (ZedStereoCamera).
+        - Duas câmeras fisheye (esquerda/direita) usando Camera.
+        - Um Lidar 3D para nuvem de pontos usando Lidar.
+    """
+
+    # ===== Sim / sensores básicos =====
+    physics_dt: float = 0.005
+    z_offset: float = 0.25
+
+    chase_camera_base_path: str = "body"
+    chase_camera_x_offset: float = -5.0
+    chase_camera_z_offset: float = -10.0
+    chase_camera_tilt_angle: float = 60.0
+
+    # ===== Occupancy Map =====
+    occupancy_map_radius: float = 1.5
+    occupancy_map_z_min: float = 0.05
+    occupancy_map_z_max: float = 1.2
+    occupancy_map_cell_size: float = 0.05
+    occupancy_map_collision_radius: float = 0.3
+
+    # ===== Teleop / random actions / path following (mantidos compatíveis com cenários) =====
+    keyboard_linear_velocity_gain: float = 1.0
+    keyboard_angular_velocity_gain: float = 1.0
+
+    gamepad_linear_velocity_gain: float = 1.0
+    gamepad_angular_velocity_gain: float = 1.0
+
+    random_action_linear_velocity_range: Tuple[float, float] = (-0.3, 0.25)
+    random_action_angular_velocity_range: Tuple[float, float] = (-0.75, 0.75)
+    random_action_linear_acceleration_std: float = 1.0
+    random_action_angular_acceleration_std: float = 5.0
+    random_action_grid_pose_sampler_grid_size: float = 5.0
+
+    path_following_speed: float = 0.5
+    path_following_angular_gain: float = 1.0
+    path_following_stop_distance_threshold: float = 0.5
+    path_following_forward_angle_threshold = math.pi
+    path_following_target_point_offset_meters: float = 1.0
+
+    # ===== Geometria / juntas / asset =====
+    wheel_base: float = 1.65
+    track_width: float = 1.25
+    wheel_radius: float = 0.5
+
+    max_steer_angle: float = math.radians(80.0)
+
+    # Nomes das juntas conforme o USD de forklift_c.usd
+    rear_wheel_dof_names: List[str] = ["left_back_wheel_joint", "right_back_wheel_joint"]
+    steering_dof_names:   List[str] = ["left_rotator_joint", "right_rotator_joint"]
+
+    usd_url: str = (
+        "http://omniverse-content-production.s3-us-west-2.amazonaws.com/"
+        "Assets/Isaac/4.2/Isaac/Robots/Forklift/forklift_c.usd"
+    )
+    chassis_subpath: str = ""  # articulação raiz é o próprio prim do robô
+
+    # Câmera frontal "oficial" para compatibilidade com Robot.build_front_camera
+    front_camera_type: Type[Sensor] = ZedStereoCamera
+    front_camera_base_path: str = "sensors/front_stereo"
+    front_camera_rotation: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    front_camera_translation: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def __init__(
+        self,
+        prim_path: str,
+        robot: _WheeledRobot,
+        articulation_view: _ArticulationView,
+        front_camera: Sensor | None = None,
+    ):
+        # Usa o construtor da classe-base FourWheelRearSteerRobot_V1 (que por sua vez
+        # chama Robot.__init__) para preservar a integração com o _WheeledRobot
+        # e a lógica de índices/limites já validada.
+        super().__init__(prim_path=prim_path, robot=robot, articulation_view=articulation_view, front_camera=front_camera)
+
+        # Sensores expostos de forma explícita (usados pela extensão e pelo Writer)
+        self.front_stereo: Optional[Sensor] = front_camera  # ZedStereoCamera
+        self.fisheye_left: Optional[Camera] = None
+        self.fisheye_right: Optional[Camera] = None
+        self.lidar: Optional[Lidar] = None
+
+        # Cache de índices de DOF (rodas e direção)
+        self._rear_idx: Optional[np.ndarray] = None
+        self._steer_idx: Optional[np.ndarray] = None
+
+    # ------------- Construção -------------
+    @classmethod
+    def build(cls, prim_path: str) -> "ForkliftRobotV3":
+        """
+        Constrói o Forklift V3 reutilizando o pipeline de construção já testado
+        de FourWheelRearSteerRobot_V1 (que instancia o _WheeledRobot,
+        ArticulationView e configura limites/índices de DOF), e em seguida
+        apenas "embrulha" essa instância em ForkliftRobotV3 para adicionar
+        sensores extras e uma write_action mais simples.
+        """
+        base = FourWheelRearSteerRobot_V1.build(prim_path)
+
+        instance = cls(
+            prim_path=base.prim_path,
+            robot=base.robot,
+            articulation_view=base.articulation_view,
+            front_camera=base.front_camera,
+        )
+
+        # Reaproveita índices já computados pela base, se existirem
+        try:
+            instance._rear_idx = getattr(base, "_rear_idx", None)
+            instance._steer_idx = getattr(base, "_steer_idx", None)
+        except Exception:
+            pass
+
+        # Anexa sensores auxiliares (stereo/front já veio de base.front_camera)
+        instance._attach_aux_sensors()
+
+        return instance
+
+    def _setup_dof_indices(self):
+        """Resolve índices de DOF para rodas traseiras e juntas de direção."""
+        try:
+            self.articulation_view.initialize()
+        except Exception:
+            pass
+
+        def _resolve(names: List[str]) -> np.ndarray:
+            idxs: List[int] = []
+            for n in names:
+                i = -1
+                try:
+                    i_val = self.articulation_view.get_dof_index(n)
+                    # Alguns wrappers retornam None quando o DOF não existe;
+                    # convertemos isso explicitamente para -1 para evitar erros
+                    # no np.asarray(..., dtype=np.int32).
+                    if i_val is None:
+                        i = -1
+                    else:
+                        i = int(i_val)
+                except Exception:
+                    i = -1
+                idxs.append(i)
+            arr = np.asarray(idxs, dtype=np.int32)
+            if (arr < 0).any():
+                print(f"[ForkliftRobotV3] Warning: some DOF names not found: {names} -> {arr}")
+            return arr
+
+        self._rear_idx = _resolve(self.rear_wheel_dof_names)
+        self._steer_idx = _resolve(self.steering_dof_names)
+
+    def _attach_aux_sensors(self):
+        """Anexa câmeras fisheye e Lidar em caminhos fixos sob o prim do robô."""
+        # Paths baseados em self.prim_path para manter a cena organizada
+        try:
+            # Importações locais para evitar dependência forte em ambientes sem os assets
+            from omni.ext.mobility_gen.sensors import ZedStereoCamera as _ZedStereoCamera  # noqa: F401
+            from omni.ext.mobility_gen.sensors import _xform_translate, _xform_orient_quat
+        except Exception:
+            _xform_translate = None
+            _xform_orient_quat = None
+
+        # Já temos self.front_camera (ZedStereoCamera) via build_front_camera,
+        # mas expomos também em self.front_stereo para ficar explícito.
+        self.front_stereo = self.front_camera
+
+        # Câmera fisheye esquerda
+        try:
+            left_path = os.path.join(self.prim_path, "sensors/fisheye_left")
+            self.fisheye_left = Camera(left_path, (640, 480))
+            if _xform_translate is not None and _xform_orient_quat is not None:
+                try:
+                    _xform_translate(left_path, (1.0, -0.45, 1.2))
+                    qw, qx, qy, qz = _quat_from_euler_xyz(0.0, 0.0, 20.0)
+                    _xform_orient_quat(left_path, (qw, qx, qy, qz))
+                except Exception:
+                    pass
+        except Exception:
+            self.fisheye_left = None
+
+        # Câmera fisheye direita
+        try:
+            right_path = os.path.join(self.prim_path, "sensors/fisheye_right")
+            self.fisheye_right = Camera(right_path, (640, 480))
+            if _xform_translate is not None and _xform_orient_quat is not None:
+                try:
+                    _xform_translate(right_path, (1.0, 0.45, 1.2))
+                    qw, qx, qy, qz = _quat_from_euler_xyz(0.0, 0.0, -20.0)
+                    _xform_orient_quat(right_path, (qw, qx, qy, qz))
+                except Exception:
+                    pass
+        except Exception:
+            self.fisheye_right = None
+
+        # Lidar 3D no topo
+        try:
+            lidar_path = os.path.join(self.prim_path, "sensors/lidar")
+            self.lidar = Lidar(lidar_path)
+            try:
+                self.lidar.enable_lidar()
+            except Exception:
+                pass
+        except Exception:
+            self.lidar = None
+
+        # Garante que câmeras tenham RGB habilitado para gravação
+        try:
+            if isinstance(self.front_stereo, ZedStereoCamera):
+                if hasattr(self.front_stereo, "left"):
+                    self.front_stereo.left.enable_rgb_rendering()
+                if hasattr(self.front_stereo, "right"):
+                    self.front_stereo.right.enable_rgb_rendering()
+        except Exception:
+            pass
+        try:
+            if self.fisheye_left is not None:
+                self.fisheye_left.enable_rgb_rendering()
+        except Exception:
+            pass
+        try:
+            if self.fisheye_right is not None:
+                self.fisheye_right.enable_rgb_rendering()
+        except Exception:
+            pass
+
+    # ------------- Controle -------------
+    def write_action(self, step_size: float):
+        """
+        Interpreta self.action como [v_mps, delta_rad] e:
+        - Converte v_mps em velocidades angulares nas rodas traseiras (ω = v/R).
+        - Aplica delta_rad como alvo de posição igual nas duas juntas de direção.
+
+        Isso é compatível com:
+        - KeyboardTeleoperationScenario_forklift / _forklift_2 (cenários que já
+          publicam [v_mps, delta_rad]).
+        - RandomAccelerationScenario / RandomPathFollowingScenario, desde que
+          configurados para empurrar a mesma convenção de ação.
+        """
+        try:
+            action = self.action.get_value()
+        except Exception:
+            action = None
+
+        if action is None or len(action) < 2:
+            return
+
+        v_mps = float(action[0])
+        delta = float(action[1])
+
+        # Garante limites de direção básicos (sem alterar USD)
+        delta = float(np.clip(delta, -self.max_steer_angle, self.max_steer_angle))
+
+        # Garante índices/limites usando a lógica robusta da classe-base
+        try:
+            if getattr(self, "_rear_idx", None) is None or getattr(self, "_steer_idx", None) is None:
+                if hasattr(self, "_ensure_indices_limits_and_drive"):
+                    self._ensure_indices_limits_and_drive()
+        except Exception:
+            pass
+
+        if getattr(self, "_rear_idx", None) is None or getattr(self, "_steer_idx", None) is None:
+            # sem índices válidos, não aplicamos ação
+            return
+
+        # 1) Rodas traseiras: velocidade angular ω = v / R
+        try:
+            omega = v_mps / max(self.wheel_radius, 1e-6)
+            wheel_vel = np.array([omega, omega], dtype=np.float32)
+            self.articulation_view.set_joint_velocity_targets(
+                velocities=wheel_vel,
+                joint_indices=self._rear_idx,
+            )
+        except Exception:
+            pass
+
+        # 2) Direção traseira: mesmo ângulo nas duas juntas
+        try:
+            steer_targets = np.array([delta, delta], dtype=np.float32)
+            self.articulation_view.set_joint_position_targets(
+                positions=steer_targets,
+                joint_indices=self._steer_idx,
+            )
+        except Exception:
+            pass

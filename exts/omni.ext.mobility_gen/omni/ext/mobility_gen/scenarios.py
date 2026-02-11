@@ -17,8 +17,29 @@
 import numpy as np
 from typing import Tuple
 import math
+import os
+import sys
+import warnings
 
-from mobility_gen_path_planner import generate_paths
+# Ensure the local `path_planner` package is importable when running inside Isaac Sim.
+# Isaac's embedded Python doesn't include the repository layout on sys.path by default,
+# so add the project's `path_planner` folder to sys.path if it exists.
+_HERE = os.path.dirname(__file__)
+# move up to the repository root: mobility_gen -> omni/ext/mobility_gen -> omni/ext -> omni.ext.mobility_gen -> exts -> <repo root>
+_REPO_ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", "..", "..", ".."))
+_PATH_PLANNER = os.path.join(_REPO_ROOT, "path_planner")
+if os.path.isdir(_PATH_PLANNER) and _PATH_PLANNER not in sys.path:
+    sys.path.insert(0, _PATH_PLANNER)
+
+try:
+    from mobility_gen_path_planner import generate_paths as _generate_paths
+except Exception as exc:
+    _generate_paths = None
+    warnings.warn(
+        f"mobility_gen_path_planner is unavailable ({exc}). "
+        "RandomPathFollowingScenario will use robot planner fallback when possible.",
+        RuntimeWarning,
+    )
 
 from omni.ext.mobility_gen.utils.path_utils import PathHelper, vector_angle
 from omni.ext.mobility_gen.utils.registry import Registry
@@ -57,8 +78,9 @@ class Scenario(Module):
 
 SCENARIOS = Registry[Scenario]()
 
-#@SCENARIOS.register()
-class RandomPathFollowingScenario(Scenario):
+
+@SCENARIOS.register()
+class RandomPathFollowingScenarioRearSteer(Scenario):
     """
     Path following compatível com FourWheelRearSteerRobot_V1:
       action = [v_mps, delta_rad]
@@ -91,6 +113,22 @@ class RandomPathFollowingScenario(Scenario):
     # ---------- utilidades ----------
     def _set_random_target_path(self):
         """Gera um caminho aleatório a partir da pose atual."""
+        # If the robot exposes a convenience planner, prefer it (it will
+        # call mobility_gen_path_planner internally). This keeps the
+        # planner integration centralized in the Robot class. Otherwise,
+        # fall back to the previous local planning logic.
+        try:
+            if hasattr(self.robot, 'plan_path_from_occupancy_map'):
+                path_list = self.robot.plan_path_from_occupancy_map(self.occupancy_map)
+                # path_list is list[(x,y)] -> convert to numpy array shape (N,2)
+                path = np.asarray(path_list, dtype=np.float32)
+                self.target_path.set_value(path)
+                self._helper = PathHelper(path)
+                return
+        except Exception:
+            # fall back to local planner below
+            pass
+
         current_pose = self.robot.get_pose_2d()
 
         start_px = self.occupancy_map.world_to_pixel_numpy(
@@ -99,7 +137,13 @@ class RandomPathFollowingScenario(Scenario):
         freespace = self.buffered_occupancy_map.freespace_mask()
         start = (start_px[0, 1], start_px[0, 0])
 
-        output = generate_paths(start, freespace)
+        if _generate_paths is None:
+            raise RuntimeError(
+                "mobility_gen_path_planner is not available and robot fallback planner failed. "
+                "Install path_planner with Isaac python (../app/python.sh -m pip install -e path_planner)."
+            )
+
+        output = _generate_paths(start, freespace)
         end = output.sample_random_end_point()
         path = output.unroll_path(end)
         path = path[:, ::-1]  # (y,x) -> (x,y)
@@ -176,7 +220,7 @@ class RandomPathFollowingScenario(Scenario):
         self.robot.write_action(step_size)
         return True
 
-@SCENARIOS.register()
+#@SCENARIOS.register()
 class KeyboardTeleoperationScenario_forklift_2(Scenario):
 
     """
@@ -230,7 +274,13 @@ class KeyboardTeleoperationScenario_forklift_2(Scenario):
         # leitura dos botões
         buttons = self.keyboard.buttons.get_value()
         def btn(i: int) -> float:
-            return float(buttons[i]) if i < len(buttons) else 0.0
+            # buttons may be None if the input system isn't initialized; guard it
+            if buttons is None:
+                return 0.0
+            try:
+                return float(buttons[i]) if i < len(buttons) else 0.0
+            except Exception:
+                return 0.0
 
         w = btn(0); a = btn(1); s = btn(2); d = btn(3)
         space = btn(4)  # freio
@@ -276,6 +326,120 @@ class KeyboardTeleoperationScenario_forklift_2(Scenario):
         self.update_state()
         return True
 
+
+#@SCENARIOS.register()
+class KeyboardTeleoperationScenario_ForkliftV3(Scenario):
+    """
+    Teleop dedicado para ForkliftRobotV3 (rear-steer Ackermann-like).
+
+    Mapeamento de botões:
+      [0]=W, [1]=A, [2]=S, [3]=D, [4]=Space (freio), [5]=C (recentra)
+
+    Publica ação: [v_mps, delta_rad]
+      v_mps    = (W - S) * robot.keyboard_linear_velocity_gain
+      delta_rad: integrado de (A - D) * steer_rate, limitado por
+                 robot.effective_steer_limit (se existir) ou robot.max_steer_angle.
+    """
+
+    _default_steer_rate = 1.5      # rad/s
+    _default_brake_acc = 5.0       # m/s^2
+    _default_center_relax = 2.5    # rad/s
+    _warmup_frames_total = 20
+
+    def __init__(self, robot: Robot, occupancy_map: OccupancyMap):
+        super().__init__(robot, occupancy_map)
+        self.keyboard = inputs.Keyboard()
+        self.pose_sampler = pose_samplers.UniformPoseSampler()
+
+        self._lin_gain = float(getattr(self.robot, "keyboard_linear_velocity_gain", 1.0))
+        self._steer_rate = float(getattr(self.robot, "keyboard_angular_velocity_gain", self._default_steer_rate))
+
+        self._v_cmd = 0.0
+        self._delta = 0.0
+        self._warmup = 0
+
+    def _delta_limit(self) -> float:
+        # limite efetivo de direção vindo do robô, com fallbacks seguros
+        return float(getattr(self.robot, "effective_steer_limit", getattr(self.robot, "max_steer_angle", 0.6)))
+
+    def reset(self):
+        # posiciona o robô usando o sampler de pose no mapa
+        pose = self.pose_sampler.sample(self.buffered_occupancy_map)
+        self.robot.set_pose_2d(pose)
+
+        # zera comando e publica uma vez para "acordar" drives
+        self._v_cmd = 0.0
+        self._delta = 0.0
+        self.robot.action.set_value(np.array([0.0, 0.0], dtype=np.float32))
+        try:
+            dt = float(getattr(self.robot, "physics_dt", 0.005))
+        except Exception:
+            dt = 0.005
+        self.robot.write_action(dt)
+
+        self._warmup = self._warmup_frames_total
+
+    def step(self, step_size: float) -> bool:
+        self.update_state()
+
+        delta_lim = self._delta_limit()
+
+        buttons = self.keyboard.buttons.get_value()
+
+        def btn(i: int) -> float:
+            if buttons is None:
+                return 0.0
+            try:
+                return float(buttons[i]) if i < len(buttons) else 0.0
+            except Exception:
+                return 0.0
+
+        w = btn(0)
+        a = btn(1)
+        s = btn(2)
+        d = btn(3)
+        space = btn(4)
+        cent = btn(5)
+
+        # velocidade alvo sem freio
+        v_target = (w - s) * self._lin_gain
+
+        # freio
+        if space > 0.5:
+            dv = self._default_brake_acc * float(step_size)
+            if abs(self._v_cmd) <= dv:
+                self._v_cmd = 0.0
+            else:
+                self._v_cmd -= np.sign(self._v_cmd) * dv
+        else:
+            self._v_cmd = v_target
+
+        # integra direção
+        self._delta += (a - d) * self._steer_rate * float(step_size)
+
+        # recentra quando 'C' está pressionado
+        if cent > 0.5:
+            relax = self._default_center_relax * float(step_size)
+            if abs(self._delta) <= relax:
+                self._delta = 0.0
+            else:
+                self._delta -= np.sign(self._delta) * relax
+
+        # clamp no limite efetivo
+        self._delta = float(np.clip(self._delta, -delta_lim, delta_lim))
+
+        # publica ação e aplica no robô
+        self.robot.action.set_value(np.array([self._v_cmd, self._delta], dtype=np.float32))
+        self.robot.write_action(step_size)
+
+        # warmup: primeiros frames após reset reforçam publicação
+        if self._warmup > 0:
+            self._warmup -= 1
+            self.robot.write_action(step_size)
+
+        self.update_state()
+        return True
+
 @SCENARIOS.register()
 class KeyboardTeleoperationScenario_forklift(Scenario):
     """
@@ -292,6 +456,7 @@ class KeyboardTeleoperationScenario_forklift(Scenario):
     _default_steer_rate = 1.5      # rad/s (taxa de mudança do ângulo de direção)
     _default_brake_acc  = 5.0      # m/s^2 (desaceleração quando Space está pressionado)
     _default_center_relax = 2.5    # rad/s (taxa para recentrar quando C está pressionado)
+    _warmup_frames_total = 20
 
     def __init__(self, robot, occupancy_map):
         super().__init__(robot, occupancy_map)
@@ -312,20 +477,37 @@ class KeyboardTeleoperationScenario_forklift(Scenario):
         # estados
         self._v_cmd = 0.0
         self._delta = 0.0
+        self._warmup = 0
 
     def reset(self):
         pose = self.pose_sampler.sample(self.buffered_occupancy_map)
         self.robot.set_pose_2d(pose)
+        try:
+            self.robot.post_reset()
+        except Exception:
+            pass
         self._v_cmd = 0.0
         self._delta = 0.0
         self.robot.action.set_value(np.array([0.0, 0.0], dtype=np.float32))
+        try:
+            dt = float(getattr(self.robot, "physics_dt", 0.005))
+        except Exception:
+            dt = 0.005
+        self.robot.write_action(dt)
+        self._warmup = self._warmup_frames_total
 
     def step(self, step_size: float) -> bool:
         self.update_state()
 
         buttons = self.keyboard.buttons.get_value()
         def btn(i: int) -> float:
-            return float(buttons[i]) if i < len(buttons) else 0.0
+            # defensive: buttons can be None or malformed; return 0.0 in that case
+            if buttons is None:
+                return 0.0
+            try:
+                return float(buttons[i]) if i < len(buttons) else 0.0
+            except Exception:
+                return 0.0
 
         w = btn(0); a = btn(1); s = btn(2); d = btn(3)
         space = btn(4)   # freio
@@ -360,6 +542,9 @@ class KeyboardTeleoperationScenario_forklift(Scenario):
         # publica ação e aplica no robô
         self.robot.action.set_value(np.array([self._v_cmd, self._delta], dtype=np.float32))
         self.robot.write_action(step_size)
+        if self._warmup > 0:
+            self._warmup -= 1
+            self.robot.write_action(step_size)
 
         self.update_state()
         return True
@@ -402,7 +587,7 @@ class KeyboardTeleoperationScenario(Scenario):
         return True
     
 
-@SCENARIOS.register()
+#@SCENARIOS.register()
 class GamepadTeleoperationScenario(Scenario):
 
     def __init__(self, 
@@ -479,7 +664,7 @@ class RandomAccelerationScenario(Scenario):
 
 
 
-@SCENARIOS.register()
+#@SCENARIOS.register()
 class RandomPathFollowingScenario(Scenario):
     def __init__(self, 
             robot: Robot, 
@@ -558,10 +743,5 @@ class RandomPathFollowingScenario(Scenario):
         self.robot.write_action(step_size=step_size)
 
         return self.is_alive
-
-
-
-
-
 
 

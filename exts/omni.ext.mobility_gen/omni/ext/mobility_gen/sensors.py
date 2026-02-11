@@ -177,6 +177,145 @@ class Camera(Sensor):
         super().update_state()
 
 
+# =========================================================
+# LIDAR / POINTCLOUD SENSOR (skeleton)
+#
+# This is a small, generic Lidar sensor wrapper showing how to expose
+# a point-cloud buffer to the Module/Buffer system. The implementation
+# of how to obtain a point-cloud depends on which Isaac/Replicator
+# or RTX Lidar API you use. The key parts are:
+#  - create a Buffer(tags=["pointcloud"]) on the sensor
+#  - in update_state() set the buffer value to a numpy Nx3 (or Nx4)
+#    array containing points in the robot/world frame
+#  - the Module.state_dict_pointcloud() helper (added to common.py)
+#    collects these buffers automatically and Writer/Reader will
+#    persist them.
+# =========================================================
+
+
+class Lidar(Sensor):
+    """Generic Lidar wrapper that exposes a `pointcloud` buffer.
+
+    Usage notes:
+    - If you have a replicator annotator that produces point-clouds,
+      attach it in `enable_lidar()` and call `get_data()` in
+      `update_state()` to populate `self.pointcloud`.
+    - If you use an RTX Lidar node or another Isaac sensor API, call
+      that API in `update_state()` and set the buffer value to a
+      numpy array of shape (N, 3) or (N, 4).
+    """
+
+    def __init__(self, prim_path: str):
+        self._prim_path = prim_path
+        self._xform_prim = XFormPrim(self._prim_path)
+        self.pointcloud = Buffer(tags=["pointcloud"])  # the buffer consumers will look for
+        # expose position/orientation so we can persist sensor pose if needed
+        self.position = Buffer()
+        self.orientation = Buffer()
+        self._annotator = None
+
+    def enable_lidar(self):
+        """Enable a Lidar source.
+
+        Strategy:
+        1) Prefer isaacsim.sensors.rtx.LidarRtx (RTX Lidar). If available,
+           instantiate it for this prim and request point-cloud output.
+        2) Fallback to a replicator annotator named 'point_cloud' (if present).
+
+        After enabling, call `add_point_cloud_data_to_frame()` on RTX lidar
+        to ensure point-clouds are captured into `get_current_frame()`.
+        """
+        # Try RTX Lidar first
+        try:
+            from isaacsim.sensors.rtx import LidarRtx
+
+            # LidarRtx expects a prim path corresponding to an Isaac Lidar prim.
+            # If the prim does not exist, LidarRtx will create one.
+            self._rtx = LidarRtx(prim_path=self._prim_path, name="lidar")
+            # request point cloud data on frames
+            try:
+                self._rtx.add_point_cloud_data_to_frame()
+            except Exception:
+                pass
+            # mark annotator source as RTX
+            self._annotator = None
+            return
+        except Exception:
+            # RTX Lidar not available in this environment
+            self._rtx = None
+
+        # Fallback: replicator annotator
+        try:
+            self._annotator = rep.AnnotatorRegistry.get_annotator("point_cloud")
+            # Many annotators expect a render product; attach to prim or render product
+            try:
+                self._annotator.attach(self._prim_path)
+            except Exception:
+                # some annotators expect a list
+                try:
+                    self._annotator.attach([self._prim_path])
+                except Exception:
+                    pass
+        except Exception:
+            # no annotator available
+            self._annotator = None
+
+    def disable_lidar(self):
+        if self._annotator is not None:
+            try:
+                self._annotator.detach()
+            except Exception:
+                pass
+            self._annotator = None
+
+    def update_state(self):
+        # If we have an annotator, try to get its data
+        if self._rtx is not None:
+            try:
+                frame = self._rtx.get_current_frame()
+                # RTX returns point_cloud_data under 'point_cloud_data'
+                if "point_cloud_data" in frame:
+                    pts = np.asarray(frame["point_cloud_data"])
+                elif "point_cloud" in frame:
+                    pts = np.asarray(frame["point_cloud"])
+                else:
+                    pts = None
+                self.pointcloud.set_value(pts)
+            except Exception:
+                self.pointcloud.set_value(None)
+        elif self._annotator is not None:
+            try:
+                pc = self._annotator.get_data()
+                # Annotator may return a dict or numpy array depending on impl;
+                # normalize to an Nx3 numpy array if possible
+                if isinstance(pc, dict) and "points" in pc:
+                    pts = np.asarray(pc["points"])
+                else:
+                    pts = np.asarray(pc)
+
+                # pts should be Nx3 or Nx4; store as-is
+                self.pointcloud.set_value(pts)
+            except Exception:
+                # If annotator fails, leave pointcloud as-is (or set to None)
+                self.pointcloud.set_value(None)
+        else:
+            # No annotator attached: device-specific API should populate
+            # the buffer here.
+            pass
+
+        # always update pose buffers from prim transform
+        try:
+            position, orientation = self._xform_prim.get_world_pose()
+            self.position.set_value(position)
+            self.orientation.set_value(orientation)
+        except Exception:
+            # best-effort: leave as None
+            self.position.set_value(None)
+            self.orientation.set_value(None)
+
+        super().update_state()
+
+
 #=========================================================
 #  FINAL CLASSES
 #=========================================================
@@ -184,7 +323,7 @@ class Camera(Sensor):
 
 class HawkCamera(Sensor):
 
-    usd_url: str = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/LeopardImaging/Hawk/hawk_v1.1_nominal.usd"
+    usd_url: str = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/LeopardImaging/Hawk/hawk_v1.1_nominal.usd"
     resolution: Tuple[int, int] = (960, 600)
     left_camera_path: str = "left/camera_left"
     right_camera_path: str = "right/camera_right"
@@ -230,7 +369,7 @@ class RealSenseRGBDCamera(Sensor):
     """
     # Ajuste para o caminho real do asset no seu servidor/Omniverse
    
-    usd_url: str = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Sensors/RealSense/RealSense_D435.usd"
+    usd_url: str = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Sensors/RealSense/RealSense_D435.usd"
     resolution: Tuple[int, int] = (1280, 720)
     camera_path: str = "camera"  # subcaminho do prim de câmera dentro do USD referenciado
 
@@ -275,7 +414,7 @@ class ZedStereoCamera(Sensor):
     - attach(): empacota os dois prims internos em duas Cameras (left/right)
     """
     # Ajuste para o caminho real do asset no seu servidor/Omniverse
-    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Sensors/Stereolabs/ZED_X/ZED_X.usd"
+    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Sensors/Stereolabs/ZED_X/ZED_X.usd"
     resolution: Tuple[int, int] = (1280, 720)
     left_camera_path: str = "left/camera_left"     # confirme no USD
     right_camera_path: str = "right/camera_right"  # confirme no USD

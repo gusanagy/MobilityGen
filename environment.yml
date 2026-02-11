@@ -12,4 +12,5 @@ dependencies:
   - pip
   - pip:
       - gradio
+    - open3d
 
