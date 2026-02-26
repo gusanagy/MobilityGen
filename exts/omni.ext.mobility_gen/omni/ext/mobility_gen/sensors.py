@@ -191,8 +191,6 @@ class Camera(Sensor):
 #=========================================================
 #  FINAL CLASSES
 #=========================================================
-
-
 class HawkCamera(Sensor):
 
     usd_url: str = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Sensors/LeopardImaging/Hawk/hawk_v1.1_nominal.usd"
@@ -228,50 +226,6 @@ class HawkCamera(Sensor):
 
         return HawkCamera(left_camera, right_camera)
     
-
-# ================================================
-# RealSense em formato HawkCamera
-# ================================================
-class RealSenseRGBDCamera(Sensor):
-    """
-    Câmera “tipo RealSense” (RGB-D) com o mesmo padrão estrutural de HawkCamera:
-    - Atributos de classe: usd_url, resolution, camera_path (subprim interno)
-    - build(): injeta a referência USD e delega para attach()
-    - attach(): empacota o prim interno em uma Camera (sua classe)
-    """
-    # Ajuste para o caminho real do asset no seu servidor/Omniverse
-    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Robots/NVIDIA/Kaya/props/realsense.usd"
-    resolution: Tuple[int, int] = (1280, 720)
-    camera_path: str = "camera"  # subcaminho do prim de câmera dentro do USD referenciado
-
-    def __init__(self, cam: Camera):
-        self.cam = cam
-
-    @classmethod
-    def build(cls, prim_path: str) -> "RealSenseRGBDCamera":
-        """
-        Cria um Xform em `prim_path`, adiciona a referência para o USD da RealSense
-        e retorna o wrapper com a Camera interna.
-        """
-        stage = get_stage()
-
-        stage_add_usd_ref(
-            stage=stage,
-            path=prim_path,
-            usd_path=cls.usd_url,
-        )
-
-        return cls.attach(prim_path)
-
-    @classmethod
-    def attach(cls, prim_path: str) -> "RealSenseRGBDCamera":
-        """
-        Resolve o caminho absoluto do prim interno da câmera (ex.: "<prim_path>/camera")
-        e o empacota em uma instância da sua classe Camera, com a resolução padrão.
-        """
-        cam_full_path = os.path.join(prim_path, cls.camera_path)
-        cam = Camera(cam_full_path, cls.resolution)
-        return RealSenseRGBDCamera(cam)
 
 
 # ================================================
@@ -383,168 +337,6 @@ def _quat_from_euler_xyz(rx_deg: float, ry_deg: float, rz_deg: float):
 
 
 # =========================================================
-# CÂMERAS BEV (padrão HawkCamera; sem atalhos próprios)
-# =========================================================
-
-class BevTopDownCamera(Sensor):
-    """
-    Câmera ortográfica (vista superior métrica) – ideal para GT BEV.
-    build(): cria/configura o prim ortográfico (apertures em mm) e posiciona em +Z.
-    attach(): envolve o prim em uma Camera (sua classe).
-    """
-    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/SG2/H60YA/Camera_SG2_OX03CC_5200_GMSL2_H60YA.usd" 
-    resolution: Tuple[int, int] = (1024, 1024)
-
-    def __init__(self, cam: Camera):
-        self.cam = cam
-
-    @classmethod
-    def build(
-        cls,
-        prim_path: str,
-        *,
-        height_m: float = 5.0,
-        view_width_m: float = 14.0,
-        view_height_m: float = 14.0,
-        resolution: Tuple[int, int] = (1024, 1024),
-        near: float = 0.05,
-        far: float = 2000.0,
-    ) -> "BevTopDownCamera":
-        """
-        - horizontal/verticalAperture em **milímetros** (USD).
-        - Para cobrir exatamente `view_width_m` x `view_height_m` em mundo, use mm = metros * 1000.
-        - Em ortográfica, a câmera olha por padrão para -Z; subir em +Z basta.
-        """
-        cam_prim = _define_camera_prim(prim_path)
-        cam_prim.CreateProjectionAttr(UsdGeom.Tokens.orthographic)
-
-        # ✅ Conversão correta: metros -> milímetros
-        cam_prim.CreateHorizontalApertureAttr(view_width_m * 1000.0)
-        cam_prim.CreateVerticalApertureAttr(view_height_m * 1000.0)
-        cam_prim.CreateClippingRangeAttr(Gf.Vec2f(float(near), float(far)))
-
-        # Posição: acima do plano (olhando -Z por padrão)
-        _xform_translate(prim_path, (0.0, 0.0, float(height_m)))
-
-        return cls.attach(prim_path, resolution)
-
-    @classmethod
-    def attach(cls, prim_path: str, resolution: Tuple[int, int] = None) -> "BevTopDownCamera":
-        res = resolution if resolution is not None else cls.resolution
-        return BevTopDownCamera(Camera(prim_path, res))
-# =========================================================
-
-# ========================================================
-# BEV CAMERA
-# =========================================================
-class BevFrontDownCamera(Sensor):
-    """
-    Câmera perspectiva à frente e inclinada para baixo.
-    - FOV horizontal definido por hfov_deg.
-    - verticalAperture calculada pelo aspect ratio da resolução (robusto para não-16:9).
-    """
-    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/SG2/H60YA/Camera_SG2_OX03CC_5200_GMSL2_H60YA.usd"
-    resolution: Tuple[int, int] = (1280, 720)
-
-    def __init__(self, cam: Camera):
-        self.cam = cam
-
-    @classmethod
-    def build(
-        cls,
-        prim_path: str,
-        *,
-        forward_m: float = 0.8,
-        height_m: float = 1.8,
-        pitch_down_deg: float = 55.0,
-        hfov_deg: float = 70.0,
-        resolution: Tuple[int, int] = (1280, 720),
-        near: float = 0.05,
-        far: float = 1000.0,
-        filmback_mm: float = 36.0,  # horizontalAperture "clássica" de 36mm
-    ) -> "BevFrontDownCamera":
-        """
-        Constrói uma câmera perspectiva com HFOV alvo:
-        - focal = 0.5 * horiz_ap_mm / tan(HFOV/2)
-        - verticalAperture = horiz_ap_mm / aspect (para respeitar a resolução escolhida)
-        """
-        
-        cam_prim = _define_camera_prim(prim_path)
-        cam_prim.CreateProjectionAttr(UsdGeom.Tokens.perspective)
-        cam_prim.CreateClippingRangeAttr(Gf.Vec2f(float(near), float(far)))
-
-        # Óptica a partir do HFOV
-        horiz_ap_mm = float(filmback_mm)
-        focal_mm = 0.5 * horiz_ap_mm / math.tan(math.radians(hfov_deg) * 0.5)
-
-        # Usa o aspect da resolução (robusto para qualquer res)
-        res_x, res_y = resolution
-        aspect = (res_x / res_y) if (res_x and res_y) else (16.0 / 9.0)
-        vert_ap_mm = horiz_ap_mm / aspect
-
-        cam_prim.CreateHorizontalApertureAttr(horiz_ap_mm)
-        cam_prim.CreateVerticalApertureAttr(vert_ap_mm)
-        cam_prim.CreateFocalLengthAttr(focal_mm)
-
-        # Pose: desloca à frente e inclina "olhando para baixo"
-        _xform_translate(prim_path, (float(forward_m), 0.0, float(height_m)))
-        qw, qx, qy, qz = _quat_from_euler_xyz(0.0, -float(pitch_down_deg), 0.0)
-        _xform_orient_quat(prim_path, (qw, qx, qy, qz))
-
-        return cls.attach(prim_path, resolution)
-
-    @classmethod
-    def attach(cls, prim_path: str, resolution: Tuple[int, int] = None) -> "BevFrontDownCamera":
-        res = resolution if resolution is not None else cls.resolution
-        return BevFrontDownCamera(Camera(prim_path, res))
-
-# =========================================================
-# Camera nuScenes
-# =========================================================
-class NuScenesCamera(Sensor):
-    """
-    Single perspective camera using the SG8S-AR0820C-5300-G2A-H60SA USD asset.
-    Works as a drop-in 'front_camera_type' for Robot.build_front_camera().
-    """
-    usd_url: str = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Sensing/SG8/H60SA/SG8S-AR0820C-5300-G2A-H60SA.usd"
-    resolution: Tuple[int, int] = (1920, 1200)
-    # The camera prim path inside the USD asset
-    camera_subprim: str = "SG8S_AR0820C_5300_G2A_H60SA_01"
-
-    def __init__(self, cam: Camera):
-        self.cam = cam
-
-    @classmethod
-    def build(
-        cls,
-        prim_path: str,
-        *,
-        resolution: Tuple[int, int] = None,
-    ) -> "NuScenesCamera":
-        """
-        Loads the SG8S camera USD asset at prim_path and wraps the internal camera prim.
-        """
-        stage = get_stage()
-        
-        # Add the USD reference at prim_path (like HawkCamera does)
-        stage_add_usd_ref(
-            stage=stage,
-            path=prim_path,
-            usd_path=cls.usd_url
-        )
-        
-        return cls.attach(prim_path, resolution)
-
-    @classmethod
-    def attach(cls, prim_path: str, resolution: Tuple[int, int] = None) -> "NuScenesCamera":
-        res = resolution or cls.resolution
-        # Full path to camera inside the USD: prim_path/camera_subprim
-        camera_full_path = os.path.join(prim_path, cls.camera_subprim)
-
-        return NuScenesCamera(Camera(camera_full_path, res))
-#========================================================
-
-# =========================================================
 # Câmera Fisheye com distorção OpenCV
 # =========================================================
 class FisheyeCamera(Sensor):
@@ -560,9 +352,13 @@ class FisheyeCamera(Sensor):
     f_stop = 1.8
     focus_distance = 1.5
 
-    def __init__(self, cam: Camera):
-        self.cam = cam
+    right_camera_path: str = "right/camera_right"  # para compatibilidade com HawkCamera
+    left_camera_path: str = "left/camera_left"    # para compatibilidade com HawkCamera
 
+    def __init__(self, left: Camera, right: Camera):
+        self.left = left
+        self.right = right
+        
     @classmethod
     def build(
         cls,
@@ -638,8 +434,10 @@ class FisheyeCamera(Sensor):
         """
         Anexa a uma câmera fisheye existente.
         """
-        res = resolution or cls.resolution
-        return FisheyeCamera(Camera(prim_path, res))
+        left_camera = Camera(prim_path, resolution or cls.resolution)
+        right_camera = Camera(prim_path, resolution or cls.resolution)
+
+        return FisheyeCamera(left_camera, right_camera)  # Usamos ambos os cameras para compatibilidade com HawkCamera
 # =========================================================
 
 #=========================================================
@@ -720,25 +518,44 @@ class LidarSensor(Sensor):
     def update_state(self):
         """
         Collects data from the RTX Lidar annotators.
+        Implements fallback: if RTX Lidar fails or returns empty, try replicator annotator 'point_cloud'.
         """
+        point_cloud_set = False
         try:
-            # Acessar dados diretamente dos annotators internos
+            # RTX Lidar annotators
             if hasattr(self._lidar, '_annotators') and self._lidar._annotators:
                 for name, annotator in self._lidar._annotators.items():
                     data = annotator.get_data()
-                    
                     if data is not None and 'data' in data:
                         pc = data['data']
                         if pc is not None and hasattr(pc, 'shape') and pc.shape[0] > 0:
                             self.point_cloud.set_value(pc)
+                            point_cloud_set = True
                         if 'intensity' in data and data['intensity'].shape[0] > 0:
                             self.intensities.set_value(data['intensity'])
                         if 'distance' in data and data['distance'].shape[0] > 0:
                             self.distances.set_value(data['distance'])
                         break
-        except:
-            pass
-        
+        except Exception as e:
+            print(f"[LidarSensor] RTX Lidar annotator error: {e}")
+
+        # Fallback: replicator annotator 'pointcloud'
+        if not point_cloud_set:
+            try:
+                import omni.replicator.core as rep
+                # Cria render product se necessário
+                if not hasattr(self, '_render_product') or self._render_product is None:
+                    self._render_product = rep.create.render_product(self._lidar.prim_path, (512, 512), force_new=True)
+                annotator = rep.AnnotatorRegistry.get_annotator("pointcloud")
+                if annotator is not None:
+                    annotator.attach(self._render_product)
+                    pc = annotator.get_data()
+                    if pc is not None and hasattr(pc, 'shape') and pc.shape[0] > 0:
+                        self.point_cloud.set_value(pc)
+                        print("[LidarSensor] Fallback: pointcloud from replicator annotator.")
+            except Exception as e:
+                print(f"[LidarSensor] Fallback failed: {e}")
+
         super().update_state()
     
     def enable_rendering(self):

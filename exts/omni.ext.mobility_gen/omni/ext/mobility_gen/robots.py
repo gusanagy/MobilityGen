@@ -31,11 +31,7 @@ from omni.ext.mobility_gen.common import Buffer, Module
 
 # Sensores extras
 from omni.ext.mobility_gen.sensors import (
-    BevFrontDownCamera,
-    BevTopDownCamera,
     HawkCamera,
-    NuScenesCamera,
-    RealSenseRGBDCamera,
     Sensor,
     ZedStereoCamera,
     FisheyeCamera,
@@ -81,20 +77,10 @@ class Robot(Module):
     occupancy_map_cell_size: float
     occupancy_map_collision_radius: float
 
-    front_camera_type: Type[Sensor]
-    front_camera_base_path: str
-    front_camera_rotation: Tuple[float, float, float]
-    front_camera_translation: Tuple[float, float, float]
-
-    front_right_camera_type: Type[Sensor]
-    front_right_camera_base_path: str
-    front_right_camera_rotation: Tuple[float, float, float]
-    front_right_camera_translation: Tuple[float, float, float]
-
-    front_left_camera_type: Type[Sensor]
-    front_left_camera_base_path: str
-    front_left_camera_rotation: Tuple[float, float, float]
-    front_left_camera_translation: Tuple[float, float, float]
+    main_camera_type: Type[Sensor]
+    main_camera_base_path: str
+    main_camera_rotation: Tuple[float, float, float]
+    main_camera_translation: Tuple[float, float, float]
 
     fisheye_camera_type: Type[Sensor] = Type[Sensor]
     fisheye_camera_base_path: str
@@ -113,9 +99,7 @@ class Robot(Module):
         prim_path: str,
         robot: _Robot,
         articulation_view: _ArticulationView,
-        front_camera: Sensor,
-        frontR_camera: Sensor,
-        frontL_camera: Sensor,
+        main_camera: Sensor,
         fisheye_camera: Sensor = None,
         lidar_sensor: Sensor = None,
     ):
@@ -127,72 +111,31 @@ class Robot(Module):
         self.orientation = Buffer()
         self.joint_positions = Buffer()
         self.joint_velocities = Buffer()
-        self.front_camera = front_camera
-        self.front_right_camera = frontR_camera
-        self.front_left_camera = frontL_camera
+        self.main_camera = main_camera
         self.fisheye_camera = fisheye_camera
         self.lidar_sensor = lidar_sensor
 
     @classmethod
-    def build_front_camera(cls, prim_path):
-        camera_path = os.path.join(prim_path, cls.front_camera_base_path)
+    def build_main_camera(cls, prim_path):
+        camera_path = os.path.join(prim_path, cls.main_camera_base_path)
         XFormPrim(camera_path)
         stage = get_stage()
-        front_camera_prim = stage_get_prim(stage, camera_path)
-        prim_rotate_x(front_camera_prim, cls.front_camera_rotation[0])
-        prim_rotate_y(front_camera_prim, cls.front_camera_rotation[1])
-        prim_rotate_z(front_camera_prim, cls.front_camera_rotation[2])
-        prim_translate(front_camera_prim, cls.front_camera_translation)
+        main_camera_prim = stage_get_prim(stage, camera_path)
+        prim_rotate_x(main_camera_prim, cls.main_camera_rotation[0])
+        prim_rotate_y(main_camera_prim, cls.main_camera_rotation[1])
+        prim_rotate_z(main_camera_prim, cls.main_camera_rotation[2])
+        prim_translate(main_camera_prim, cls.main_camera_translation)
 
         # enable RGB rendering so recorder captures images
-        sensor = cls.front_camera_type.build(prim_path=camera_path)
+        sensor = cls.main_camera_type.build(prim_path=camera_path)
         try:
             if hasattr(sensor, "cam") and sensor.cam is not None:
                 sensor.cam.enable_rgb_rendering()
         except Exception as e:
-            print(f"[Robot.build_front_camera] enable_rgb_rendering skipped: {e}")
+            print(f"[Robot.build_main_camera] enable_rgb_rendering skipped: {e}")
         return sensor
 
-    @classmethod
-    def build_front_right_camera(cls, prim_path):
-        camera_path = os.path.join(prim_path, cls.front_right_camera_base_path)
-        XFormPrim(camera_path)
-        stage = get_stage()
-        front_right_camera_prim = stage_get_prim(stage, camera_path)
-        prim_rotate_x(front_right_camera_prim, cls.front_right_camera_rotation[0])
-        prim_rotate_y(front_right_camera_prim, cls.front_right_camera_rotation[1])
-        prim_rotate_z(front_right_camera_prim, cls.front_right_camera_rotation[2])
-        prim_translate(front_right_camera_prim, cls.front_right_camera_translation)
 
-        # enable RGB rendering so recorder captures images
-        sensor = cls.front_right_camera_type.build(prim_path=camera_path)
-        try:
-            if hasattr(sensor, "cam") and sensor.cam is not None:
-                sensor.cam.enable_rgb_rendering()
-        except Exception as e:
-            print(f"[Robot.build_front_right_camera] enable_rgb_rendering skipped: {e}")
-        return sensor
-
-    @classmethod
-    def build_front_left_camera(cls, prim_path):
-        camera_path = os.path.join(prim_path, cls.front_left_camera_base_path)
-        XFormPrim(camera_path)
-        stage = get_stage()
-        front_left_camera_prim = stage_get_prim(stage, camera_path)
-        prim_rotate_x(front_left_camera_prim, cls.front_left_camera_rotation[0])
-        prim_rotate_y(front_left_camera_prim, cls.front_left_camera_rotation[1])
-        prim_rotate_z(front_left_camera_prim, cls.front_left_camera_rotation[2])
-        prim_translate(front_left_camera_prim, cls.front_left_camera_translation)
-
-        # enable RGB rendering so recorder captures images
-        sensor = cls.front_left_camera_type.build(prim_path=camera_path)
-        try:
-            if hasattr(sensor, "cam") and sensor.cam is not None:
-                sensor.cam.enable_rgb_rendering()
-        except Exception as e:
-            print(f"[Robot.build_front_left_camera] enable_rgb_rendering skipped: {e}")
-        return sensor
-    
     @classmethod
     def build_fisheye_camera(cls, prim_path):
         camera_path = os.path.join(prim_path, cls.fisheye_camera_base_path)
@@ -305,9 +248,7 @@ class WheeledRobot(Robot):
         robot: _WheeledRobot,
         articulation_view: _ArticulationView,
         controller: DifferentialController,
-        front_camera: Sensor | None = None,
-        frontR_camera: Sensor | None = None,
-        frontL_camera: Sensor | None = None,
+        main_camera: Sensor | None = None,
         fisheye_camera: Sensor | None = None,
         lidar_sensor: Sensor | None = None,
     ):
@@ -315,9 +256,7 @@ class WheeledRobot(Robot):
             prim_path,
             robot,
             articulation_view,
-            front_camera,
-            frontR_camera,
-            frontL_camera,
+            main_camera,
             fisheye_camera,
             lidar_sensor,
         )
@@ -325,13 +264,14 @@ class WheeledRobot(Robot):
 
     @classmethod
     def build(cls, prim_path: str) -> "WheeledRobot":
+        stage = get_stage()
         world = get_world()
+        # Explicitly add the USD reference first to ensure prims are created
+        stage_add_usd_ref(stage=stage, path=prim_path, usd_path=cls.usd_url)
         robot = world.scene.add(
             _WheeledRobot(
                 prim_path,
                 wheel_dof_names=cls.wheel_dof_names,
-                create_robot=True,
-                usd_path=cls.usd_url,
             )
         )
         view = _ArticulationView(os.path.join(prim_path, cls.chassis_subpath))
@@ -339,9 +279,9 @@ class WheeledRobot(Robot):
         controller = DifferentialController(
             name="controller", wheel_radius=cls.wheel_radius, wheel_base=cls.wheel_base
         )
-        camera = cls.build_front_camera(prim_path)
-        fisheye_camera = cls.build_fisheye_camera(prim_path)
-        lidar_sensor = cls.build_lidar_sensor(prim_path)
+        camera = cls.build_main_camera(prim_path)
+        fisheye_camera = cls.build_fisheye_camera(prim_path) if hasattr(cls, 'fisheye_camera_base_path') else None
+        lidar_sensor = cls.build_lidar_sensor(prim_path) if hasattr(cls, 'lidar_sensor_base_path') else None
 
         return cls(prim_path, robot, view, controller, camera, fisheye_camera, lidar_sensor)
 
@@ -374,15 +314,16 @@ class FourWheeledRobot(Robot):
 
     @classmethod
     def build(cls, prim_path: str) -> "FourWheeledRobot":
+        stage = get_stage()
         world = get_world()
+        # Explicitly add the USD reference first to ensure prims are created
+        stage_add_usd_ref(stage=stage, path=prim_path, usd_path=cls.usd_url)
         try:
             robot = world.scene.add(
                 _WheeledRobot(
                     prim_path,
                     wheel_dof_names=cls.wheel_dof_names,
                     steering_dof_names=cls.steering_dof_names,
-                    create_robot=True,
-                    usd_path=cls.usd_url,
                 )
             )
         except TypeError:
@@ -390,8 +331,6 @@ class FourWheeledRobot(Robot):
                 _WheeledRobot(
                     prim_path,
                     wheel_dof_names=cls.wheel_dof_names,
-                    create_robot=True,
-                    usd_path=cls.usd_url,
                 )
             )
             if hasattr(robot, "set_steering_dof_names"):
@@ -406,7 +345,7 @@ class FourWheeledRobot(Robot):
             track_width=cls.track_width,
             max_steer_angle=cls.max_steer_angle,
         )
-        camera = cls.build_front_camera(prim_path)
+        camera = cls.build_main_camera(prim_path)
         return cls(prim_path, robot, view, controller, camera)
 
     def _parse_command(self, raw: Any) -> Tuple[float, float]:
@@ -460,7 +399,7 @@ class IsaacLabRobot(Robot):
         controller = cls.build_policy(prim_path)
         prim = stage_get_prim(stage, prim_path)
         prim_translate(prim, (0, 0, cls.z_offset))
-        camera = cls.build_front_camera(prim_path)
+        camera = cls.build_main_camera(prim_path)
         return cls(prim_path, robot, view, controller, camera)
 
     def write_action(self, step_size):
@@ -684,64 +623,6 @@ class SpotRobot(IsaacLabRobot):
 
 
 @ROBOTS.register()
-class JetbotRobot_test(WheeledRobot):
-    physics_dt: float = 0.005
-    z_offset: float = 0.1
-
-    chase_camera_base_path = "chassis"
-    chase_camera_x_offset: float = -0.5
-    chase_camera_z_offset: float = 0.5
-    chase_camera_tilt_angle: float = 60.0
-
-    occupancy_map_radius: float = 0.25
-    occupancy_map_z_min: float = 0.05
-    occupancy_map_z_max: float = 0.5
-    occupancy_map_cell_size: float = 0.05
-    occupancy_map_collision_radius: float = 0.25
-
-    back_camera_base_path = "chassis/Sensor_01/nuScenes_camera/back_camera"
-    back_camera_rotation = (0.0, 0.0, 0.0)
-    back_camera_translation = (0.44, 0.075, 0.01)
-    back_camera_type = NuScenesCamera
-
-    left_camera_rotation = (0.0, 0.0, 0.0)
-    left_camera_translation = (0.44, 0.075, 0.01)
-    left_camera_type = NuScenesCamera
-
-    right_camera_base_path = "chassis/Sensor_01/nuScenes_camera/back_right_camera"
-    right_camera_rotation = (0.0, 0.0, 0.0)
-    right_camera_translation = (0.44, 0.075, 0.01)
-    right_camera_type = NuScenesCamera
-
-    # ===== Teleop =====
-    keyboard_linear_velocity_gain: float = 1.25
-    keyboard_angular_velocity_gain: float = 5.0
-    gamepad_linear_velocity_gain: float = 0.25
-    gamepad_angular_velocity_gain: float = 1.0
-
-    # ===== Random Action =====
-    random_action_linear_velocity_range: Tuple[float, float] = (-0.3, 0.25)
-    random_action_angular_velocity_range: Tuple[float, float] = (-0.75, 0.75)
-    random_action_linear_acceleration_std: float = 1.0
-    random_action_angular_acceleration_std: float = 5.0
-    random_action_grid_pose_sampler_grid_size: float = 5.0
-
-    # ===== Path Following =====
-    path_following_speed: float = 0.25
-    path_following_angular_gain: float = 1.0
-    path_following_stop_distance_threshold: float = 0.5
-    path_following_forward_angle_threshold = math.pi / 4
-    path_following_target_point_offset_meters: float = 1.0
-
-    # ===== USD / rodas =====
-    wheel_dof_names: List[str] = ["left_wheel_joint", "right_wheel_joint"]
-    usd_url: str = "/home/florybal/Downloads/isaac_models/worlds/jetbot_test.usd"
-    chassis_subpath: str = "chassis"
-    wheel_base: float = 0.1125
-    wheel_radius: float = 0.03
-
-
-@ROBOTS.register()
 class Jetbot_SCamera(WheeledRobot):
     physics_dt: float = 0.005
     z_offset: float = 0.1
@@ -758,20 +639,10 @@ class Jetbot_SCamera(WheeledRobot):
     chase_camera_z_offset: float = 0.5
     chase_camera_tilt_angle: float = 60.0
 
-    front_camera_base_path = "chassis/Sensors/Camera"
-    front_camera_rotation = (0.0, 0.0, 0.0)
-    front_camera_translation = (0, 0, 1)
-    front_camera_type = NuScenesCamera
-
-    front_right_camera_base_path = "chassis/Sensors/CameraR"
-    front_right_camera_rotation = (0.0, 0.0, 0.0)
-    front_right_camera_translation = (-2, 0, 1)
-    front_right_camera_type = NuScenesCamera
-
-    front_left_camera_base_path = "chassis/Sensors/CameraL"
-    front_left_camera_rotation = (0.0, 0.0, 0.0)
-    front_left_camera_translation = (2, 0, 1)
-    front_left_camera_type = NuScenesCamera
+    main_camera_base_path = "chassis/Sensors/Camera"
+    main_camera_rotation = (0.0, 0.0, 0.0)
+    main_camera_translation = (0, 0, 1)
+    main_camera_type = HawkCamera
 
     fisheye_camera_base_path = "chassis/Sensors/FisheyeCamera"
     fisheye_camera_rotation = (0.0, 0.0, 0.0)
@@ -782,7 +653,7 @@ class Jetbot_SCamera(WheeledRobot):
     lidar_sensor_rotation = (0.0, 0.0, 0.0)
     lidar_sensor_translation = (0, 0, 1)
     lidar_sensor_type = LidarSensor
-    lidar_file_name: str = "Example_Rotary"
+    lidar_file_name: str = "HESAI_XT32_SD10"
     lidar_sensor_attributes: dict = {
         "horizontal_fov": 360.0,
         "vertical_fov": 30.0,
@@ -815,20 +686,21 @@ class Jetbot_SCamera(WheeledRobot):
 
     # ===== USD / rodas =====
     wheel_dof_names: List[str] = ["left_wheel_joint", "right_wheel_joint"]
-    usd_url: str = "/home/florybal/Downloads/isaac_models/worlds/jetbot_test-Scam.usd"
+    usd_url: str = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Jetbot/jetbot.usd"
     chassis_subpath: str = "chassis"
     wheel_base: float = 0.1125
     wheel_radius: float = 0.03
 
     @classmethod
     def build(cls, prim_path: str) -> "Jetbot_SCamera":
+        stage = get_stage()
         world = get_world()
+        # Explicitly add the USD reference first to ensure prims are created
+        stage_add_usd_ref(stage=stage, path=prim_path, usd_path=cls.usd_url)
         robot = world.scene.add(
             _WheeledRobot(
                 prim_path,
                 wheel_dof_names=cls.wheel_dof_names,
-                create_robot=True,
-                usd_path=cls.usd_url,
             )
         )
         view = _ArticulationView(os.path.join(prim_path, cls.chassis_subpath))
@@ -837,9 +709,7 @@ class Jetbot_SCamera(WheeledRobot):
             name="controller", wheel_radius=cls.wheel_radius, wheel_base=cls.wheel_base
         )
 # ===================== buildando sensores ================================
-        front_camera = cls.build_front_camera(prim_path)
-        front_right_camera = cls.build_front_right_camera(prim_path)
-        front_left_camera = cls.build_front_left_camera(prim_path)
+        camera = cls.build_main_camera(prim_path)
         fisheye_camera = cls.build_fisheye_camera(prim_path)
         lidar_sensor = cls.build_lidar_sensor(prim_path)
 
@@ -848,9 +718,7 @@ class Jetbot_SCamera(WheeledRobot):
             robot,
             view,
             controller,
-            front_camera,
-            front_right_camera,
-            front_left_camera,
+            camera,
             fisheye_camera,
             lidar_sensor,
         )

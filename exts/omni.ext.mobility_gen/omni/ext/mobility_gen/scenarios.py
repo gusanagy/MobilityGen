@@ -113,14 +113,9 @@ class KeyboardTeleoperationScenario(Scenario):
             logger.error(f"Erro em write_action(): {e}")
             import traceback
             traceback.print_exc()
-
-        try:
-            self.update_state()
-        except Exception as e:
-            logger.error(f"Erro em update_state() (2): {e}")
-            import traceback
-            traceback.print_exc()
-
+        
+        self.update_state()
+ 
         return True
     
 

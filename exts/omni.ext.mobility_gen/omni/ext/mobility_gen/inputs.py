@@ -221,7 +221,7 @@ class Keyboard(Module):
 
     def __init__(self):
         self._keyboard = KeyboardDriver.instance()
-        self.buttons = Buffer()
+        self.buttons = Buffer(value=np.zeros(4, dtype=bool))
 
     def update_state(self):
         self.buttons.set_value(self._keyboard.get_button_values())
@@ -231,8 +231,8 @@ class Keyboard(Module):
 class Gamepad(Module):
     def __init__(self):
         self._gamepad = GamepadDriver.instance()
-        self.buttons = Buffer()
-        self.axes = Buffer()
+        self.buttons = Buffer(value=np.zeros(0, dtype=bool))
+        self.axes = Buffer(value=np.zeros(4, dtype=float))
 
     def update_state(self):
         self.buttons.set_value(self._gamepad.get_button_values())

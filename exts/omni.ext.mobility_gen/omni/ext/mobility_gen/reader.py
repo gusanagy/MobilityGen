@@ -41,11 +41,13 @@ class Reader:
         self.segmentation_folders = glob.glob(os.path.join(self.recording_path, "state", "segmentation", "*"))
         self.depth_folders = glob.glob(os.path.join(self.recording_path, "state", "depth", "*"))
         self.normals_folders = glob.glob(os.path.join(self.recording_path, "state", "normals", "*"))
-        self.bev_folders = glob.glob(os.path.join(self.recording_path, "state", "bev", "*"))
+        
         self.point_cloud_folders = glob.glob(os.path.join(self.recording_path, "state", "point_cloud", "*"))
-
-        self.bev_names = [os.path.basename(folder) for folder in self.bev_folders]
         self.point_cloud_names = [os.path.basename(folder) for folder in self.point_cloud_folders]
+
+        self.fisheye_folders = glob.glob(os.path.join(self.recording_path, "state", "fisheye", "*"))
+        self.fisheye_names = [os.path.basename(folder) for folder in self.fisheye_folders]
+        
         self.rgb_names = [os.path.basename(folder) for folder in self.rgb_folders]
         self.segmentation_names = [os.path.basename(folder) for folder in self.segmentation_folders]
         self.depth_names = [os.path.basename(folder) for folder in self.depth_folders]
@@ -124,6 +126,18 @@ class Reader:
         state_dict = np.load(os.path.join(self.recording_path, "state", "common", f"{step:08d}.npy"), allow_pickle=True).item()
         return state_dict
 
+    def read_fisheye(self, name: str, index: int):
+        step = self.steps[index]
+        image_path = os.path.join(self.recording_path, "state", "fisheye", name, f"{step:08d}.jpg")
+        if os.path.exists(image_path):
+            image = PIL.Image.open(image_path)
+            return np.asarray(image)
+        else:
+            return None
+
+    def read_lidar(self, name: str, index: int):
+        # Mantém compatibilidade, mas lê de point_cloud
+        return self.read_point_cloud(name, index)
 
     def read_state_dict_point_cloud(self, index: int):
         """Lê os dados de point cloud do lidar salvos como .npy"""
@@ -134,6 +148,17 @@ class Reader:
             if os.path.exists(npy_path):
                 point_cloud_dict[name] = np.load(npy_path)
         return point_cloud_dict
+    
+    def read_state_dict_fisheye(self, index: int):
+        """Lê os dados de imagens fisheye"""
+        fisheye_dict = OrderedDict()
+        step = self.steps[index]
+        for name in self.fisheye_names:
+            image_path = os.path.join(self.recording_path, "state", "fisheye", name, f"{step:08d}.jpg")
+            if os.path.exists(image_path):
+                image = PIL.Image.open(image_path)
+                fisheye_dict[name] = np.asarray(image)
+        return fisheye_dict
 
     def read_state_dict(self, index: int):
 
@@ -142,17 +167,20 @@ class Reader:
         segmentation_dict = self.read_state_dict_segmentation(index)
         depth_dict = self.read_state_dict_depth(index)
         normals_dict = self.read_state_dict_normals(index)
-        bev_dict = self.read_state_dict_bev(index)
         point_cloud_dict = self.read_state_dict_point_cloud(index)
+        fisheye_dict = self.read_state_dict_fisheye(index)
 
         full_dict = OrderedDict()
         full_dict.update(state_dict)
-        full_dict.update(bev_dict)
-        full_dict.update(point_cloud_dict)
         full_dict.update(rgb_dict)
         full_dict.update(segmentation_dict)
         full_dict.update(depth_dict)
         full_dict.update(normals_dict)
+        full_dict.update(point_cloud_dict)
+        if full_dict.get("point_cloud") is None:
+            print(f"Warning: No point cloud data found for step {index}. 'point_cloud' key will be set to None.")
+            full_dict["point_cloud"] = None
+        full_dict.update(fisheye_dict)
 
         return full_dict
     

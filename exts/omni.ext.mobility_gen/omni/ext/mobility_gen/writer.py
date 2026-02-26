@@ -80,17 +80,37 @@ class Writer:
                     os.makedirs(output_folder)
                 output_path = os.path.join(output_folder, f"{step:08d}.npy")
                 np.save(output_path, value)
+    
+    #fisheye
+    def write_state_dict_fisheye(self, state_fisheye:dict, step:int):
+            for name, value in state_fisheye.items():
+                if value is not None:
+                    image_folder = os.path.join(self.path, "state", "fisheye", name)
+                    if not os.path.exists(image_folder):
+                        os.makedirs(image_folder)
+                    image_path = os.path.join(image_folder, f"{step:08d}.jpg")
+                    image = PIL.Image.fromarray(value)
+                    image.save(image_path)
 
-######## writer bev ################################################
-    def write_bev(self, state_bev:dict, step:int):
-        for names, value in state_bev.items():
-            if value is not None:
-                bev_folder = os.path.join(self.path, "state", "bev", names)
-                os.makedirs(bev_folder, exist_ok=True)
-                
-                bev_path = os.path.join(bev_folder, f"{step:08d}.png")
-                bev = PIL.image.fromarray(value)
-                bev.save(bev_path)
+    #lidar
+    def write_state_dict_point_cloud(self, state_point_cloud: dict, step: int):
+        """Salva os dados de point cloud do lidar como arquivos .npy"""
+        for name, value in state_point_cloud.items():
+            if value is not None and hasattr(value, 'shape') and value.shape[0] > 0:
+                output_folder = os.path.join(self.path, "state", "point_cloud", name)
+                if not os.path.exists(output_folder):
+                    os.makedirs(output_folder)
+                output_path = os.path.join(output_folder, f"{step:08d}.npy")
+                np.save(output_path, value)
+            else:
+                # Se o valor for None ou um array vazio, ainda criamos um arquivo .npy vazio para manter a consistência
+                output_folder = os.path.join(self.path, "state", "point_cloud", name)
+                print(f"Warning: Point cloud data for '{name}' at step {step} is empty or None. Saving an empty array.")
+                if not os.path.exists(output_folder):
+                    os.makedirs(output_folder)
+                output_path = os.path.join(output_folder, f"{step:08d}.npy")
+                np.save(output_path, np.empty((0, 3)))  # Salva um array vazio com formato (0, 3) para point clouds
+
 ####################################################################
     def write_stage(self):
         if not os.path.exists(self.path):
@@ -122,29 +142,4 @@ class Writer:
         shutil.copyfile(os.path.join(other_path, "config.json"), os.path.join(self.path, "config.json"))
         shutil.copytree(os.path.join(other_path, "occupancy_map"), os.path.join(self.path, "occupancy_map"))
     
-
-
-    #writer nuscenes mexer depois
-    def write_nuscenes(self, state_nuscenes:dict, step:int):    
-        for names, value in state_nuscenes.items():
-            if value is not None:
-                nuscenes_folder = os.path.join(self.path, "state", "nuScenes", names)
-                os.makedirs(nuscenes_folder, exist_ok=True)
-                
-                bev_path = os.path.join(nuscenes_folder, f"{step:08d}.png")
-                bev = PIL.image.fromarray(value)
-                bev.save(bev_path)
-        pass
-    #fisheye
-    def write_fisheye(self, state_fisheye:dict, step:int):
-        pass
-    #lidar
-    def write_state_dict_point_cloud(self, state_point_cloud: dict, step: int):
-        """Salva os dados de point cloud do lidar como arquivos .npy"""
-        for name, value in state_point_cloud.items():
-            if value is not None and hasattr(value, 'shape') and value.shape[0] > 0:
-                output_folder = os.path.join(self.path, "state", "point_cloud", name)
-                if not os.path.exists(output_folder):
-                    os.makedirs(output_folder)
-                output_path = os.path.join(output_folder, f"{step:08d}.npy")
-                np.save(output_path, value)
+ 
