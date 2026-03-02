@@ -20,6 +20,7 @@ import os
 import datetime
 import tempfile
 import glob
+import math
 from collections import OrderedDict
 
 import omni.ext
@@ -94,8 +95,9 @@ class MobilityGenExtension(omni.ext.IExt):
         self._sensor_preview_latest_pointcloud = {}
         self._sensor_pose_text = "Sensor poses: waiting for scenario..."
         self._sensor_pose_label = None
-        self._preview_update_interval_frames = 2
+        self._preview_update_interval_frames = 4
         self._preview_frame_counter = 0
+        self._lidar_preview_enabled = False
 
         # Visualization window for occupancy map
         self._visualize_window = omni.ui.Window("MobilityGen - Occupancy Map", width=300, height=300)
@@ -108,9 +110,9 @@ class MobilityGenExtension(omni.ext.IExt):
             self._occ_map_frame.set_build_fn(self.build_occ_map_frame)
 
         # Low-resolution live preview window for RGB camera sensors.
-        self._sensor_preview_target_width = 320
-        self._sensor_preview_target_height = 180
-        self._lidar_preview_target_size = 220
+        self._sensor_preview_target_width = 288
+        self._sensor_preview_target_height = 162
+        self._lidar_preview_target_size = 180
         self._sensor_preview_window = omni.ui.Window("MobilityGen - Sensor Preview", width=500, height=560)
         try:
             self._sensor_preview_window.visible = True
@@ -119,6 +121,15 @@ class MobilityGenExtension(omni.ext.IExt):
         with self._sensor_preview_window.frame:
             self._sensor_preview_frame = ui.Frame()
             self._sensor_preview_frame.set_build_fn(self._build_sensor_preview_frame)
+
+        self._lidar_preview_window = omni.ui.Window("MobilityGen - LiDAR Preview", width=260, height=300)
+        try:
+            self._lidar_preview_window.visible = False
+        except Exception:
+            pass
+        with self._lidar_preview_window.frame:
+            self._lidar_preview_frame = ui.Frame()
+            self._lidar_preview_frame.set_build_fn(self._build_lidar_preview_frame)
         try:
             blank = np.zeros(
                 (self._sensor_preview_target_height, self._sensor_preview_target_width, 4),
@@ -211,6 +222,7 @@ class MobilityGenExtension(omni.ext.IExt):
                     with ui.HStack():
                         ui.Button("Start Recording", clicked_fn=self.enable_recording)
                         ui.Button("Stop Recording", clicked_fn=self.disable_recording)
+                    ui.Button("Toggle LiDAR Preview", clicked_fn=self._toggle_lidar_preview)
 
         self.update_recording_count()
         self.clear_recording()
@@ -258,7 +270,12 @@ class MobilityGenExtension(omni.ext.IExt):
                 )
                 ui.Spacer(width=6)
             ui.Spacer(height=6)
-            with ui.HStack(height=22):
+            ui.Label("Sensor Poses Relative To Robot")
+            self._sensor_pose_label = ui.Label(self._sensor_pose_text)
+
+    def _build_lidar_preview_frame(self):
+        with ui.VStack(spacing=6, height=0):
+            with ui.HStack(height=24):
                 ui.Label("LiDAR Preview (Top-Down)")
                 ui.Spacer(width=8)
                 ui.Label(f"{self._lidar_preview_target_size}x{self._lidar_preview_target_size}")
@@ -270,8 +287,13 @@ class MobilityGenExtension(omni.ext.IExt):
                     height=self._lidar_preview_target_size,
                 )
                 ui.Spacer(width=6)
-            ui.Label("Sensor Poses Relative To Robot")
-            self._sensor_pose_label = ui.Label(self._sensor_pose_text)
+
+    def _toggle_lidar_preview(self):
+        try:
+            self._lidar_preview_enabled = not bool(getattr(self, "_lidar_preview_enabled", False))
+            self._lidar_preview_window.visible = self._lidar_preview_enabled
+        except Exception:
+            pass
 
     def _on_sensor_preview_camera_changed(self, *_args):
         try:
@@ -754,6 +776,92 @@ class MobilityGenExtension(omni.ext.IExt):
 
         return paths
 
+    @staticmethod
+    def _quat_wxyz_to_euler_xyz_deg(quat_wxyz):
+        if quat_wxyz is None or len(quat_wxyz) != 4:
+            return None
+        qw, qx, qy, qz = [float(v) for v in quat_wxyz]
+
+        sinr_cosp = 2.0 * (qw * qx + qy * qz)
+        cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+        roll_x = math.atan2(sinr_cosp, cosr_cosp)
+
+        sinp = 2.0 * (qw * qy - qz * qx)
+        if abs(sinp) >= 1.0:
+            pitch_y = math.copysign(math.pi / 2.0, sinp)
+        else:
+            pitch_y = math.asin(sinp)
+
+        siny_cosp = 2.0 * (qw * qz + qx * qy)
+        cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+        yaw_z = math.atan2(siny_cosp, cosy_cosp)
+
+        return (
+            math.degrees(roll_x),
+            math.degrees(pitch_y),
+            math.degrees(yaw_z),
+        )
+
+    @staticmethod
+    def _fmt_xyz(values) -> str:
+        if values is None or len(values) != 3:
+            return "n/a"
+        return f"({float(values[0]):+.2f}, {float(values[1]):+.2f}, {float(values[2]):+.2f})"
+
+    def _get_sensor_config_pose(self, robot, sensor_name: str):
+        mapping = {
+            "front_stereo": ("front_camera_translation", "front_camera_rotation"),
+            "fisheye_left": ("fisheye_left_translation", "fisheye_left_rotation"),
+            "fisheye_right": ("fisheye_right_translation", "fisheye_right_rotation"),
+            "lidar": ("lidar_translation", "lidar_rotation"),
+        }
+        translation_attr, rotation_attr = mapping.get(sensor_name, (None, None))
+        config_translation = getattr(robot, translation_attr, None) if translation_attr else None
+        config_rotation = getattr(robot, rotation_attr, None) if rotation_attr else None
+        return config_translation, config_rotation, translation_attr, rotation_attr
+
+    @staticmethod
+    def _fmt_xyz_precise(values) -> str:
+        if values is None or len(values) != 3:
+            return "n/a"
+        return f"({float(values[0]):.3f}, {float(values[1]):.3f}, {float(values[2]):.3f})"
+
+    def _read_local_sensor_pose_from_prim(self, prim):
+        if prim is None or not prim.IsValid():
+            return None, None
+
+        local_translation = None
+        local_quat_wxyz = None
+        rotate_xyz = None
+
+        try:
+            xf = UsdGeom.Xformable(prim)
+            for op in xf.GetOrderedXformOps():
+                op_type = op.GetOpType()
+                try:
+                    value = op.Get()
+                except Exception:
+                    value = None
+
+                if op_type == UsdGeom.XformOp.TypeTranslate and value is not None:
+                    local_translation = (float(value[0]), float(value[1]), float(value[2]))
+                elif op_type == UsdGeom.XformOp.TypeOrient and value is not None:
+                    imag = value.GetImaginary()
+                    local_quat_wxyz = (
+                        float(value.GetReal()),
+                        float(imag[0]),
+                        float(imag[1]),
+                        float(imag[2]),
+                    )
+                elif op_type == UsdGeom.XformOp.TypeRotateXYZ and value is not None:
+                    rotate_xyz = (float(value[0]), float(value[1]), float(value[2]))
+        except Exception:
+            return local_translation, None
+
+        if rotate_xyz is not None:
+            return local_translation, rotate_xyz
+        return local_translation, self._quat_wxyz_to_euler_xyz_deg(local_quat_wxyz)
+
     def _update_sensor_pose_preview_text(self):
         scenario = getattr(self, "scenario", None)
         robot = getattr(scenario, "robot", None) if scenario is not None else None
@@ -792,12 +900,6 @@ class MobilityGenExtension(omni.ext.IExt):
 
         lines = [f"Robot: {robot_path}"]
         sensor_paths = self._resolve_sensor_mount_paths_for_preview(robot)
-        expected_mounts = {
-            "front_stereo": getattr(robot, "front_camera_translation", None),
-            "fisheye_left": getattr(robot, "fisheye_left_translation", None),
-            "fisheye_right": getattr(robot, "fisheye_right_translation", None),
-            "lidar": getattr(robot, "lidar_translation", None),
-        }
         if len(sensor_paths) == 0:
             lines.append("No sensors found on robot object.")
         else:
@@ -807,28 +909,42 @@ class MobilityGenExtension(omni.ext.IExt):
                     lines.append(f"{sensor_name}: prim not found ({prim_path})")
                     continue
                 try:
+                    config_translation, config_rotation, translation_attr, rotation_attr = self._get_sensor_config_pose(robot, sensor_name)
+                    local_translation, local_rotation = self._read_local_sensor_pose_from_prim(prim)
                     sensor_world = xform_cache.GetLocalToWorldTransform(prim)
                     rel = robot_world_inv * sensor_world
                     rel_t = rel.ExtractTranslation()
                     world_t = sensor_world.ExtractTranslation()
-                    expected = expected_mounts.get(sensor_name, None)
-                    if isinstance(expected, (tuple, list)) and len(expected) == 3:
-                        ex, ey, ez = [float(v) for v in expected]
-                        dx = float(rel_t[0]) - ex
-                        dy = float(rel_t[1]) - ey
-                        dz = float(rel_t[2]) - ez
-                        lines.append(
-                            f"{sensor_name}: rel=({rel_t[0]:+.2f}, {rel_t[1]:+.2f}, {rel_t[2]:+.2f}) "
-                            f"| expected=({ex:+.2f}, {ey:+.2f}, {ez:+.2f}) "
-                            f"| delta=({dx:+.2f}, {dy:+.2f}, {dz:+.2f})"
-                        )
-                    else:
-                        lines.append(
-                            f"{sensor_name}: rel=({rel_t[0]:+.2f}, {rel_t[1]:+.2f}, {rel_t[2]:+.2f})"
-                        )
+                    lines.append(f"{sensor_name}:")
+                    lines.append(f"  prim: {prim_path}")
+                    lines.append(f"  config.translation: {self._fmt_xyz(config_translation)}")
+                    lines.append(f"  config.rotation_xyz_deg: {self._fmt_xyz(config_rotation)}")
                     lines.append(
-                        f"{sensor_name}: world=({world_t[0]:+.2f}, {world_t[1]:+.2f}, {world_t[2]:+.2f})"
+                        f"  stage.local_translation: "
+                        f"{self._fmt_xyz(local_translation)}"
                     )
+                    lines.append(
+                        f"  stage.local_rotation_xyz_deg: "
+                        f"{self._fmt_xyz(local_rotation)}"
+                    )
+                    lines.append(
+                        f"  robot_relative_translation: "
+                        f"({rel_t[0]:+.2f}, {rel_t[1]:+.2f}, {rel_t[2]:+.2f})"
+                    )
+                    lines.append(
+                        f"  world_translation: "
+                        f"({world_t[0]:+.2f}, {world_t[1]:+.2f}, {world_t[2]:+.2f})"
+                    )
+                    if rotation_attr is not None:
+                        lines.append(
+                            f"  script.rotation_hint: "
+                            f"{rotation_attr} = {self._fmt_xyz_precise(local_rotation)}"
+                        )
+                    if translation_attr is not None:
+                        lines.append(
+                            f"  script.translation_hint: "
+                            f"{translation_attr} = {self._fmt_xyz_precise(local_translation)}"
+                        )
                 except Exception:
                     lines.append(f"{sensor_name}: failed to compute transform ({prim_path})")
 
@@ -969,14 +1085,29 @@ class MobilityGenExtension(omni.ext.IExt):
             return
         if not getattr(self, "_physics_callback_registered", False):
             return
-        names = [getattr(self, "_physics_callback_name", "scenario_physics")]
-        legacy = "scenario_physics"
-        if legacy not in names:
-            names.append(legacy)
-        for name in names:
-            self._remove_physics_callback_safe(target_world, name)
+        name = getattr(self, "_physics_callback_name", "scenario_physics")
+        self._remove_physics_callback_safe(target_world, name)
         self._physics_callback_registered = False
         self._physics_callback_world = None
+
+    def _attach_physics_callback(self, world) -> bool:
+        """Register the scenario physics callback on the current world instance."""
+        if world is None:
+            return False
+        self._detach_physics_callback(world)
+        try:
+            world.add_physics_callback(self._physics_callback_name, self.on_physics)
+            self._physics_callback_registered = True
+            self._physics_callback_world = world
+            return True
+        except Exception as exc:
+            self._physics_callback_registered = False
+            self._physics_callback_world = None
+            print(
+                f"[MobilityGenExtension] failed to register physics callback "
+                f"'{self._physics_callback_name}': {exc}"
+            )
+            return False
 
     @staticmethod
     def _to_jsonable(value):
@@ -1066,13 +1197,14 @@ class MobilityGenExtension(omni.ext.IExt):
             rgb_state_for_preview = {}
             pointcloud_state_for_preview = None
             need_rgb_state = should_update_preview or (self.writer is not None)
+            lidar_preview_enabled = bool(getattr(self, "_lidar_preview_enabled", False))
             if need_rgb_state:
                 try:
                     rgb_state_for_preview = scenario.state_dict_rgb()
                 except Exception:
                     rgb_state_for_preview = {}
 
-            if should_update_preview:
+            if should_update_preview and lidar_preview_enabled:
                 try:
                     pointcloud_state_for_preview = scenario.state_dict_pointcloud()
                     if isinstance(pointcloud_state_for_preview, dict) and len(pointcloud_state_for_preview) > 0:
@@ -1093,15 +1225,16 @@ class MobilityGenExtension(omni.ext.IExt):
                     self._refresh_sensor_preview(self._sensor_preview_latest_camera_map)
                 except Exception:
                     pass
-                try:
-                    lidar_input = (
-                        pointcloud_state_for_preview
-                        if isinstance(pointcloud_state_for_preview, dict) and len(pointcloud_state_for_preview) > 0
-                        else self._sensor_preview_latest_pointcloud
-                    )
-                    self._refresh_lidar_preview(lidar_input)
-                except Exception:
-                    pass
+                if lidar_preview_enabled:
+                    try:
+                        lidar_input = (
+                            pointcloud_state_for_preview
+                            if isinstance(pointcloud_state_for_preview, dict) and len(pointcloud_state_for_preview) > 0
+                            else self._sensor_preview_latest_pointcloud
+                        )
+                        self._refresh_lidar_preview(lidar_input)
+                    except Exception:
+                        pass
             else:
                 try:
                     self._update_sensor_pose_preview_text()
@@ -1119,6 +1252,12 @@ class MobilityGenExtension(omni.ext.IExt):
                     pass
                 try:
                     self.writer.write_state_dict_segmentation(scenario.state_dict_segmentation(), step=self.step)
+                except Exception:
+                    pass
+                try:
+                    self.writer.write_state_dict_instance_id_segmentation(
+                        scenario.state_dict_instance_id_segmentation(), step=self.step
+                    )
                 except Exception:
                     pass
                 try:
@@ -1443,11 +1582,11 @@ class MobilityGenExtension(omni.ext.IExt):
                 world = get_world()
                 self._detach_physics_callback(world)
                 await world.reset_async()
+                world = get_world()
 
                 self.scenario.reset()
-                world.add_physics_callback(self._physics_callback_name, self.on_physics)
-                self._physics_callback_registered = True
-                self._physics_callback_world = world
+                if not self._attach_physics_callback(world):
+                    raise RuntimeError("failed to attach scenario physics callback")
                 try:
                     world.play()
                 except Exception:

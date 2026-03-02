@@ -213,7 +213,21 @@ class Module:
         Returns:
             _type_: The module's state dictionary, including only values tagged "segmentation".
         """
-        return self.state_dict(prefix, include_tags=["segmentation"])
+        state = self.state_dict(prefix, include_tags=["segmentation"])
+        return OrderedDict(
+            (name, value)
+            for name, value in state.items()
+            if not str(name).endswith("instance_id_segmentation_image")
+        )
+
+    def state_dict_instance_id_segmentation(self, prefix: str = ""):
+        """Get the state dictionary for instance-id segmentation images only."""
+        state = self.state_dict(prefix, include_tags=["segmentation"])
+        return OrderedDict(
+            (name, value)
+            for name, value in state.items()
+            if str(name).endswith("instance_id_segmentation_image")
+        )
     
     def state_dict_depth(self, prefix: str = ""):
         """Get the state dictionary, including only values tagged "depth"

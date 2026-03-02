@@ -271,7 +271,10 @@ class RandomPathFollowingScenarioRearSteer(Scenario):
 
     # ---------- passo ----------
     def step(self, step_size: float) -> bool:
-        self.update_state()
+        try:
+            self.robot.update_state()
+        except Exception:
+            pass
 
         # checagens de segurança
         current_pose = self.robot.get_pose_2d()
@@ -629,6 +632,12 @@ class KeyboardTeleoperationScenario_forklift(Scenario):
             self.robot.post_reset()
         except Exception:
             pass
+        try:
+            # Force a fresh read path from the shared keyboard singleton after rebuild/reset.
+            self.keyboard = inputs.Keyboard()
+            self.keyboard.update_state()
+        except Exception:
+            pass
         self._v_cmd = 0.0
         self._delta = 0.0
         self.robot.action.set_value(np.array([0.0, 0.0], dtype=np.float32))
@@ -640,9 +649,16 @@ class KeyboardTeleoperationScenario_forklift(Scenario):
         self._warmup = self._warmup_frames_total
 
     def step(self, step_size: float) -> bool:
-        self.update_state()
-
-        buttons = self.keyboard.buttons.get_value()
+        # Read keyboard directly each physics tick so teleop remains responsive
+        # even if parent module state propagation gets out of sync after rebuilds.
+        try:
+            buttons = inputs.KeyboardDriver.instance().get_button_values()
+        except Exception:
+            buttons = None
+        try:
+            self.robot.update_state()
+        except Exception:
+            pass
         def btn(i: int) -> float:
             # defensive: buttons can be None or malformed; return 0.0 in that case
             if buttons is None:
@@ -688,8 +704,6 @@ class KeyboardTeleoperationScenario_forklift(Scenario):
         if self._warmup > 0:
             self._warmup -= 1
             self.robot.write_action(step_size)
-
-        self.update_state()
         return True
 
 #@SCENARIOS.register()

@@ -61,6 +61,16 @@ class Writer:
                 image = PIL.Image.fromarray(value)
                 image.save(image_path)
 
+    def write_state_dict_instance_id_segmentation(self, state_segmentation: dict, step: int):
+        for name, value in state_segmentation.items():
+            if value is not None:
+                image_folder = os.path.join(self.path, "state", "instance_id_segmentation", name)
+                if not os.path.exists(image_folder):
+                    os.makedirs(image_folder)
+                image_path = os.path.join(image_folder, f"{step:08d}.png")
+                image = PIL.Image.fromarray(value)
+                image.save(image_path)
+
     def write_state_dict_depth(self, state_np: dict, step: int):
         for name, value in state_np.items():
             if value is not None:

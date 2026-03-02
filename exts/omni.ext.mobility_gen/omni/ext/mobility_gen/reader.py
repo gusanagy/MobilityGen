@@ -44,6 +44,9 @@ class Reader:
 
         self.rgb_folders = glob.glob(os.path.join(self.recording_path, "state", "rgb", "*"))
         self.segmentation_folders = glob.glob(os.path.join(self.recording_path, "state", "segmentation", "*"))
+        self.instance_id_segmentation_folders = glob.glob(
+            os.path.join(self.recording_path, "state", "instance_id_segmentation", "*")
+        )
         self.depth_folders = glob.glob(os.path.join(self.recording_path, "state", "depth", "*"))
         self.normals_folders = glob.glob(os.path.join(self.recording_path, "state", "normals", "*"))
         self.pointcloud_folders = glob.glob(os.path.join(self.recording_path, "state", "pointcloud", "*"))
@@ -51,6 +54,9 @@ class Reader:
 
         self.rgb_names = [os.path.basename(folder) for folder in self.rgb_folders]
         self.segmentation_names = [os.path.basename(folder) for folder in self.segmentation_folders]
+        self.instance_id_segmentation_names = [
+            os.path.basename(folder) for folder in self.instance_id_segmentation_folders
+        ]
         self.depth_names = [os.path.basename(folder) for folder in self.depth_folders]
         self.normals_names = [os.path.basename(folder) for folder in self.normals_folders]
         self.pointcloud_names = [os.path.basename(folder) for folder in self.pointcloud_folders]
@@ -98,6 +104,26 @@ class Reader:
         segmentation_dict = OrderedDict()
         for name in self.segmentation_names:
             data = self.read_segmentation(name, index)
+            segmentation_dict[name] = data
+        return segmentation_dict
+
+    def read_instance_id_segmentation(self, name: str, index: int):
+        step = self.steps[index]
+        image = PIL.Image.open(
+            os.path.join(
+                self.recording_path,
+                "state",
+                "instance_id_segmentation",
+                name,
+                f"{step:08d}.png",
+            )
+        )
+        return np.asarray(image)
+
+    def read_state_dict_instance_id_segmentation(self, index: int):
+        segmentation_dict = OrderedDict()
+        for name in self.instance_id_segmentation_names:
+            data = self.read_instance_id_segmentation(name, index)
             segmentation_dict[name] = data
         return segmentation_dict
     
@@ -209,6 +235,7 @@ class Reader:
         state_dict = self.read_state_dict_common(index)
         rgb_dict = self.read_state_dict_rgb(index)
         segmentation_dict = self.read_state_dict_segmentation(index)
+        instance_id_segmentation_dict = self.read_state_dict_instance_id_segmentation(index)
         depth_dict = self.read_state_dict_depth(index)
         normals_dict = self.read_state_dict_normals(index)
         pc_dict = self.read_state_dict_pointcloud(index)
@@ -217,6 +244,7 @@ class Reader:
         full_dict.update(state_dict)
         full_dict.update(rgb_dict)
         full_dict.update(segmentation_dict)
+        full_dict.update(instance_id_segmentation_dict)
         full_dict.update(depth_dict)
         full_dict.update(normals_dict)
         full_dict.update(pc_dict)

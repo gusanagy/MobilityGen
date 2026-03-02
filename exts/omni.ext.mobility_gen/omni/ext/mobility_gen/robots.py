@@ -202,7 +202,19 @@ class Robot(Module):
 
         stage = get_stage()
 
-        camera_path = os.path.join(self.prim_path, self.chase_camera_base_path, "chase_camera")
+        mount_path = os.path.join(self.prim_path, self.chase_camera_base_path, "chase_camera_mount")
+        XFormPrim(mount_path)
+        mount_prim = stage_get_prim(stage, mount_path)
+        prim_translate(
+            mount_prim,
+            (
+                self.chase_camera_x_offset,
+                self.chase_camera_y_offset,
+                self.chase_camera_z_offset,
+            ),
+        )
+
+        camera_path = os.path.join(mount_path, "chase_camera")
         stage_add_camera(stage, 
             camera_path, 
             focal_length=10, horizontal_aperature=30, vertical_aperature=30
@@ -211,7 +223,6 @@ class Robot(Module):
         prim_rotate_x(camera_prim, self.chase_camera_tilt_angle)
         prim_rotate_y(camera_prim, 0)
         prim_rotate_z(camera_prim, -90)
-        prim_translate(camera_prim, (self.chase_camera_x_offset, self.chase_camera_y_offset, self.chase_camera_z_offset))
 
         return camera_path
     
@@ -449,9 +460,9 @@ class FourWheelRearSteerRobot_V1(Robot):
 
     # Third-person chase camera behind and above the forklift.
     chase_camera_base_path: str = "body"
-    chase_camera_x_offset: float = -5.0
-    chase_camera_y_offset: float = 5.0
-    chase_camera_z_offset: float = 5.0
+    chase_camera_x_offset: float = -10.0
+    chase_camera_y_offset: float = 10.0
+    chase_camera_z_offset: float = 10.0
     chase_camera_tilt_angle: float = 45.0
 
     # ===== Occupancy Map (usado pelo builder) =====
@@ -464,9 +475,16 @@ class FourWheelRearSteerRobot_V1(Robot):
     # ===== Câmera frontal =====
     front_camera_type = HawkCamera
     front_camera_base_path = "sensors/mobilitygen/front_stereo"
+    sensor_mount_auto_fit_enabled: bool = True
+
+    # Easy-to-edit per-sensor poses.
     front_camera_rotation = (0., 0., 0.)
-    # Fallback mounts (used only when body bounds cannot be evaluated).
-    min_sensor_mount_distance: float = 0.25
+    # Side-looking fisheyes: same base orientation, mirrored yaw.
+    fisheye_left_rotation: Tuple[float, float, float] = (90.0, 180.0, 0.0)
+    fisheye_right_rotation: Tuple[float, float, float] = (90.0, 360.0, 0.0)
+    lidar_rotation: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    # Fallback translations (used only when body bounds cannot be evaluated).
     front_camera_translation = (1.25, 0.0, 2.20)
     fisheye_visual_usd_url: str = (
         "/home/pdi_4/Documents/Documentos/bevlog-isaac/isaac-assets/"
@@ -476,10 +494,22 @@ class FourWheelRearSteerRobot_V1(Robot):
     fisheye_left_translation: Tuple[float, float, float] = (1.15, -0.85, 2.10)
     fisheye_right_translation: Tuple[float, float, float] = (1.15, 0.85, 2.10)
     lidar_translation: Tuple[float, float, float] = (0.15, 0.0, 2.55)
+
+    # Fine manual adjustments applied after auto-fit/fallback translation.
+    front_camera_mount_adjustment: Tuple[float, float, float] = (0.10, 0.0, 0.05)
+    fisheye_left_mount_adjustment: Tuple[float, float, float] = (0.0, -0.05, 0.10)
+    fisheye_right_mount_adjustment: Tuple[float, float, float] = (0.0, 0.05, 0.10)
+    lidar_mount_adjustment: Tuple[float, float, float] = (0.0, 0.0, 0.15)
+
+    # Auto-fit shape heuristics relative to body bounds.
+    min_sensor_mount_distance: float = 0.25
     sensor_mount_xy_margin_ratio: float = 0.12
     sensor_mount_xy_margin_min: float = 0.25
     sensor_mount_z_margin_ratio: float = 0.10
     sensor_mount_z_margin_min: float = 0.18
+    front_camera_forward_ratio: float = 1.0
+    fisheye_forward_ratio: float = 0.90
+    lidar_height_ratio: float = 1.8
 
 
     # ===== Teleop =====
@@ -487,19 +517,21 @@ class FourWheelRearSteerRobot_V1(Robot):
     keyboard_angular_velocity_gain: float = 1.8
 
     # ===== Path-following tuning (quick wins: faster, smoother, less CPU checks) =====
-    path_following_speed: float = 1.2
-    path_following_angular_gain: float = 1.8
+    path_following_speed: float = 2.0
+    path_following_angular_gain: float = 1.4
     path_following_stop_distance_threshold: float = 0.45
-    path_following_target_point_offset_meters: float = 1.25
+    path_following_target_point_offset_meters: float = 1.75
     path_following_max_steer_command: float = 0.55
-    path_following_delta_rate_limit: float = 1.8
-    path_following_lookahead_min: float = 0.75
-    path_following_lookahead_max: float = 2.8
+    path_following_delta_rate_limit: float = 2.4
+    path_following_lookahead_min: float = 1.20
+    path_following_lookahead_max: float = 3.50
     path_following_min_goal_distance_m: float = 5.0
-    path_following_smoothing_iterations: int = 1
-    path_following_safety_points: int = 5
-    path_following_safety_margin: float = 0.30
-    path_following_min_speed: float = 0.25
+    path_following_smoothing_iterations: int = 0
+    path_following_safety_points: int = 3
+    path_following_safety_margin: float = 0.22
+    path_following_min_speed: float = 0.55
+    path_following_max_curve_speed_factor: float = 1.0
+    path_following_min_curve_speed_factor: float = 0.65
 
     # ===== Geometria =====
     wheel_base: float = 1.65
@@ -818,7 +850,10 @@ class FourWheelRearSteerRobot_V1(Robot):
         parent_path = sensor_parent or cls._resolve_sensor_mount_parent(prim_path)
         prim = stage_get_prim(stage, parent_path)
         if prim is None or not prim.IsValid():
-            return mounts
+            return cls._apply_sensor_mount_adjustments(mounts)
+
+        if not bool(getattr(cls, "sensor_mount_auto_fit_enabled", True)):
+            return cls._apply_sensor_mount_adjustments(mounts)
 
         try:
             bounds = cls._compute_body_bounds_for_mount(
@@ -838,17 +873,98 @@ class FourWheelRearSteerRobot_V1(Robot):
             y_margin = max(float(sy) * float(cls.sensor_mount_xy_margin_ratio), float(cls.sensor_mount_xy_margin_min))
             z_margin = max(float(sz) * float(cls.sensor_mount_z_margin_ratio), float(cls.sensor_mount_z_margin_min))
 
-            front_x = float(mx[0] + x_margin)
+            front_x = float(mx[0] + x_margin * float(getattr(cls, "front_camera_forward_ratio", 1.0)))
             mid_x = float(0.5 * (mn[0] + mx[0]))
             top_z = float(mx[2] + z_margin)
+            fisheye_x = float(mx[0] + x_margin * float(getattr(cls, "fisheye_forward_ratio", 0.9)))
+            lidar_height_ratio = float(getattr(cls, "lidar_height_ratio", 1.8))
 
             mounts["front"] = (front_x, 0.0, top_z)
-            mounts["left"] = (float(front_x * 0.90), float(mn[1] - y_margin), top_z)
-            mounts["right"] = (float(front_x * 0.90), float(mx[1] + y_margin), top_z)
-            mounts["lidar"] = (mid_x, 0.0, float(mx[2] + 1.8 * z_margin))
-            return mounts
+            mounts["left"] = (fisheye_x, float(mn[1] - y_margin), top_z)
+            mounts["right"] = (fisheye_x, float(mx[1] + y_margin), top_z)
+            mounts["lidar"] = (mid_x, 0.0, float(mx[2] + lidar_height_ratio * z_margin))
+            return cls._apply_sensor_mount_adjustments(mounts)
         except Exception:
-            return mounts
+            return cls._apply_sensor_mount_adjustments(mounts)
+
+    @classmethod
+    def _add_xyz(
+        cls,
+        base_xyz: Tuple[float, float, float],
+        delta_xyz: Tuple[float, float, float],
+    ) -> Tuple[float, float, float]:
+        return tuple(float(base_xyz[i]) + float(delta_xyz[i]) for i in range(3))
+
+    @classmethod
+    def _apply_sensor_mount_adjustments(
+        cls,
+        mounts: Dict[str, Tuple[float, float, float]],
+    ) -> Dict[str, Tuple[float, float, float]]:
+        adjusted = dict(mounts)
+        adjusted["front"] = cls._add_xyz(
+            mounts["front"],
+            tuple(getattr(cls, "front_camera_mount_adjustment", (0.0, 0.0, 0.0))),
+        )
+        adjusted["left"] = cls._add_xyz(
+            mounts["left"],
+            tuple(getattr(cls, "fisheye_left_mount_adjustment", (0.0, 0.0, 0.0))),
+        )
+        adjusted["right"] = cls._add_xyz(
+            mounts["right"],
+            tuple(getattr(cls, "fisheye_right_mount_adjustment", (0.0, 0.0, 0.0))),
+        )
+        adjusted["lidar"] = cls._add_xyz(
+            mounts["lidar"],
+            tuple(getattr(cls, "lidar_mount_adjustment", (0.0, 0.0, 0.0))),
+        )
+        return adjusted
+
+    @classmethod
+    def _reset_visual_model_camera_local_rotation(cls, model_root_path: str):
+        """Make camera prims inside referenced visual USD inherit the sensor mount pose.
+
+        The fisheye visual USD contains its own Camera prim(s). If those keep an
+        authored local rotation, they appear misaligned relative to the logical
+        camera created by the script. Resetting only the local rotation of those
+        Camera prims preserves the mesh placement while making their displayed
+        orientation follow the parent sensor mount.
+        """
+        stage = get_stage()
+        model_root = stage_get_prim(stage, model_root_path)
+        if model_root is None or not model_root.IsValid():
+            return
+
+        try:
+            for prim in Usd.PrimRange(model_root):
+                if prim is None or not prim.IsValid():
+                    continue
+                if str(prim.GetTypeName() or "") != "Camera":
+                    continue
+                try:
+                    xf = UsdGeom.Xformable(prim)
+                    for op in xf.GetOrderedXformOps():
+                        op_type = op.GetOpType()
+                        attr = op.GetAttr() if hasattr(op, "GetAttr") else op.GetOpAttr()
+                        if op_type == UsdGeom.XformOp.TypeOrient:
+                            typ = str(attr.GetTypeName())
+                            if "quatf" in typ or "GfQuatf" in typ:
+                                attr.Set(Gf.Quatf(1.0, Gf.Vec3f(0.0, 0.0, 0.0)))
+                            else:
+                                attr.Set(Gf.Quatd(1.0, Gf.Vec3d(0.0, 0.0, 0.0)))
+                        elif op_type == UsdGeom.XformOp.TypeRotateX:
+                            attr.Set(0.0)
+                        elif op_type == UsdGeom.XformOp.TypeRotateY:
+                            attr.Set(0.0)
+                        elif op_type == UsdGeom.XformOp.TypeRotateZ:
+                            attr.Set(0.0)
+                        elif op_type == UsdGeom.XformOp.TypeRotateXYZ:
+                            attr.Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                        elif op_type == UsdGeom.XformOp.TypeRotateZYX:
+                            attr.Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     @classmethod
     def build_front_camera(cls, prim_path):
@@ -1023,6 +1139,7 @@ class FourWheelRearSteerRobot_V1(Robot):
                 usd_path=self.fisheye_visual_usd_url,
                 context=f"{self.__class__.__name__}.fisheye_left",
             )
+            self._reset_visual_model_camera_local_rotation(os.path.join(left_path, "model_3d"))
             _ensure_sensor_marker(left_path, (0.15, 0.7, 1.0))
             left_cam_path = os.path.join(left_path, "camera")
             _assert_camera_slot(left_cam_path, "fisheye_left")
@@ -1031,7 +1148,7 @@ class FourWheelRearSteerRobot_V1(Robot):
             # Mount slightly forward/left and rotate to look forward-left.
             self._validate_sensor_mount_outside_body("fisheye_left", left_mount)
             _xform_translate(left_path, left_mount)
-            qw, qx, qy, qz = _quat_from_euler_xyz(0.0, 90.0, 30.0)
+            qw, qx, qy, qz = _quat_from_euler_xyz(*self.fisheye_left_rotation)
             _xform_orient_quat(left_path, (qw, qx, qy, qz))
         except RuntimeError as exc:
             print(str(exc))
@@ -1049,6 +1166,7 @@ class FourWheelRearSteerRobot_V1(Robot):
                 usd_path=self.fisheye_visual_usd_url,
                 context=f"{self.__class__.__name__}.fisheye_right",
             )
+            self._reset_visual_model_camera_local_rotation(os.path.join(right_path, "model_3d"))
             _ensure_sensor_marker(right_path, (0.15, 1.0, 0.35))
             right_cam_path = os.path.join(right_path, "camera")
             _assert_camera_slot(right_cam_path, "fisheye_right")
@@ -1057,7 +1175,7 @@ class FourWheelRearSteerRobot_V1(Robot):
             # Mount slightly forward/right and rotate to look forward-right.
             self._validate_sensor_mount_outside_body("fisheye_right", right_mount)
             _xform_translate(right_path, right_mount)
-            qw, qx, qy, qz = _quat_from_euler_xyz(0.0, 90.0, -30.0)
+            qw, qx, qy, qz = _quat_from_euler_xyz(*self.fisheye_right_rotation)
             _xform_orient_quat(right_path, (qw, qx, qy, qz))
         except RuntimeError as exc:
             print(str(exc))
@@ -1072,7 +1190,7 @@ class FourWheelRearSteerRobot_V1(Robot):
             self.lidar = Lidar.build(lidar_path)
             self._validate_sensor_mount_outside_body("lidar", lidar_mount)
             _xform_translate(lidar_path, lidar_mount)
-            qw, qx, qy, qz = _quat_from_euler_xyz(0.0, 0.0, 0.0)
+            qw, qx, qy, qz = _quat_from_euler_xyz(*self.lidar_rotation)
             _xform_orient_quat(lidar_path, (qw, qx, qy, qz))
             self.lidar.enable_lidar()
             # Re-apply mount after enabling in case backend recreated internal prim data.
@@ -1233,6 +1351,11 @@ class FourWheelRearSteerRobot_V1(Robot):
             return True
 
         try:
+            if hasattr(self.robot, "initialize"):
+                try:
+                    self.robot.initialize()
+                except Exception:
+                    pass
             self.articulation_view.initialize()
         except Exception:
             # Em alguns frames (especialmente após reset), initialize pode falhar

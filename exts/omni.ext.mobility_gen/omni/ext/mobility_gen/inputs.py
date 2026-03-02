@@ -64,6 +64,8 @@ class KeyboardDriver(object):
             carb.input.KeyboardInput.A,
             carb.input.KeyboardInput.S,
             carb.input.KeyboardInput.D,
+            carb.input.KeyboardInput.SPACE,
+            carb.input.KeyboardInput.C,
         ]
 
         self.buttons = [KeyboardButton(key) for key in key_input_types]

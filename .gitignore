@@ -11,3 +11,5 @@ _*/
 
 /app
 data
+
+*__pycache__/

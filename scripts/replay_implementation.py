@@ -422,12 +422,16 @@ def write_summary(
         common_files = glob.glob(os.path.join(output_path, "state", "common", "*.npy"))
         rgb_files = glob.glob(os.path.join(output_path, "state", "rgb", "*", "*.jpg"))
         seg_files = glob.glob(os.path.join(output_path, "state", "segmentation", "*", "*.png"))
+        inst_seg_files = glob.glob(
+            os.path.join(output_path, "state", "instance_id_segmentation", "*", "*.png")
+        )
         depth_files = glob.glob(os.path.join(output_path, "state", "depth", "*", "*.png"))
         normals_files = glob.glob(os.path.join(output_path, "state", "normals", "*", "*.npy"))
         ann_files = glob.glob(os.path.join(output_path, "state", "annotations", "*.json"))
         f.write(f"state/common files: {len(common_files)}\n")
         f.write(f"state/rgb images: {len(rgb_files)}\n")
         f.write(f"state/segmentation images: {len(seg_files)}\n")
+        f.write(f"state/instance_id_segmentation images: {len(inst_seg_files)}\n")
         f.write(f"state/depth images: {len(depth_files)}\n")
         f.write(f"state/normals arrays: {len(normals_files)}\n")
         f.write(f"state/annotations files: {len(ann_files)}\n")
@@ -492,6 +496,10 @@ def run_dry_run(args: argparse.Namespace, reader: Any, writer: Any) -> Tuple[int
             writer.write_state_dict_rgb(reader.read_state_dict_rgb(index=step), step)
         if args.segmentation_enabled:
             writer.write_state_dict_segmentation(reader.read_state_dict_segmentation(index=step), step)
+        if args.instance_id_segmentation_enabled:
+            writer.write_state_dict_instance_id_segmentation(
+                reader.read_state_dict_instance_id_segmentation(index=step), step
+            )
         if args.depth_enabled:
             writer.write_state_dict_depth(reader.read_state_dict_depth(index=step), step)
         if args.normals_enabled:
@@ -584,6 +592,10 @@ def run_replay(
             writer.write_state_dict_rgb(scenario.state_dict_rgb(), step)
         if args.segmentation_enabled:
             writer.write_state_dict_segmentation(scenario.state_dict_segmentation(), step)
+        if args.instance_id_segmentation_enabled:
+            writer.write_state_dict_instance_id_segmentation(
+                scenario.state_dict_instance_id_segmentation(), step
+            )
         if args.depth_enabled:
             writer.write_state_dict_depth(scenario.state_dict_depth(), step)
         if args.normals_enabled:
