@@ -93,12 +93,16 @@ class MobilityGenExtension(omni.ext.IExt):
         self._sensor_preview_latest_rgb = {}
         self._sensor_preview_latest_camera_map = OrderedDict()
         self._sensor_preview_latest_pointcloud = {}
-        self._sensor_pose_text = "Sensor poses: waiting for scenario..."
+        self._sensor_pose_text = "Waiting for scenario..."
         self._sensor_pose_label = None
         self._sensor_preview_enabled = True
+        self._sensor_preview_mode = "simplified"
+        self._sensor_preview_compact_layout = False
+        self._preview_mode_items = ["simplified", "robust"]
         self._preview_update_interval_frames = 8
         self._preview_frame_counter = 0
         self._lidar_preview_enabled = False
+        self._lidar_preview_mode = "simplified"
         self._lidar_preview_auto_range = True
         self._lidar_preview_manual_range_m = 8
         self._lidar_preview_point_size = 2
@@ -110,6 +114,9 @@ class MobilityGenExtension(omni.ext.IExt):
         self._lidar_preview_history = []
         self._lidar_preview_stats_text = "LiDAR stats: waiting for pointcloud..."
         self._lidar_preview_stats_label = None
+        self._occ_map_goal_info_text = "Goal info: waiting for scenario..."
+        self._occ_map_goal_info_label = None
+        self._lidar_preview_smoothed_range = None
 
         # Visualization window for occupancy map
         self._visualize_window = omni.ui.Window("MobilityGen - Occupancy Map", width=300, height=300)
@@ -142,6 +149,14 @@ class MobilityGenExtension(omni.ext.IExt):
         with self._lidar_preview_window.frame:
             self._lidar_preview_frame = ui.Frame()
             self._lidar_preview_frame.set_build_fn(self._build_lidar_preview_frame)
+        self._path_planning_window = omni.ui.Window("MobilityGen - Path Planning", width=340, height=420)
+        try:
+            self._path_planning_window.visible = False
+        except Exception:
+            pass
+        with self._path_planning_window.frame:
+            self._path_planning_frame = ui.Frame()
+            self._path_planning_frame.set_build_fn(self._build_path_planning_frame)
         try:
             blank = np.zeros(
                 (self._sensor_preview_target_height, self._sensor_preview_target_width, 4),
@@ -164,6 +179,8 @@ class MobilityGenExtension(omni.ext.IExt):
             pass
         self._lidar_preview_toggle_model = ui.SimpleBoolModel(self._lidar_preview_enabled)
         self._sensor_preview_toggle_model = ui.SimpleBoolModel(self._sensor_preview_enabled)
+        self._sensor_preview_mode_model = ui.SimpleIntModel(0)
+        self._lidar_preview_mode_model = ui.SimpleIntModel(0)
         self._lidar_preview_auto_range_model = ui.SimpleBoolModel(self._lidar_preview_auto_range)
         self._lidar_preview_range_model = ui.SimpleIntModel(self._lidar_preview_manual_range_m)
         self._lidar_preview_point_size_model = ui.SimpleIntModel(self._lidar_preview_point_size)
@@ -171,6 +188,24 @@ class MobilityGenExtension(omni.ext.IExt):
         self._lidar_preview_flip_x_model = ui.SimpleBoolModel(self._lidar_preview_flip_x)
         self._lidar_preview_flip_y_model = ui.SimpleBoolModel(self._lidar_preview_flip_y)
         self._lidar_preview_swap_xy_model = ui.SimpleBoolModel(self._lidar_preview_swap_xy)
+        self._path_planning_models = {
+            "path_following_speed": ui.SimpleFloatModel(2.0),
+            "path_following_angular_gain": ui.SimpleFloatModel(1.4),
+            "path_following_stop_distance_threshold": ui.SimpleFloatModel(0.45),
+            "path_following_target_point_offset_meters": ui.SimpleFloatModel(1.75),
+            "path_following_max_steer_command": ui.SimpleFloatModel(0.55),
+            "path_following_delta_rate_limit": ui.SimpleFloatModel(2.4),
+            "path_following_lookahead_min": ui.SimpleFloatModel(1.2),
+            "path_following_lookahead_max": ui.SimpleFloatModel(3.5),
+            "path_following_safety_points": ui.SimpleIntModel(3),
+            "path_following_safety_margin": ui.SimpleFloatModel(0.22),
+            "path_following_min_speed": ui.SimpleFloatModel(0.55),
+            "path_following_smoothing_iterations": ui.SimpleIntModel(0),
+        }
+        self._path_planning_info_label = None
+        self._path_planning_button = None
+        self._apply_sensor_preview_mode_settings()
+        self._apply_lidar_preview_mode_settings()
 
         # discover available USD worlds in the working directory and DATA_DIR
         try:
@@ -191,10 +226,22 @@ class MobilityGenExtension(omni.ext.IExt):
                     with ui.HStack():
                         ui.Label("Scenario Type")
                         self.scenario_combo_box = ui.ComboBox(0, *SCENARIOS.names())
+                        try:
+                            self.scenario_combo_box.model.get_item_value_model().add_value_changed_fn(
+                                self._on_scenario_selection_changed
+                            )
+                        except Exception:
+                            pass
 
                     with ui.HStack():
                         ui.Label("Robot Type")
                         self.robot_combo_box = ui.ComboBox(0, *ROBOTS.names())
+                        try:
+                            self.robot_combo_box.model.get_item_value_model().add_value_changed_fn(
+                                self._on_robot_selection_changed
+                            )
+                        except Exception:
+                            pass
 
                     with ui.HStack(height=24):
                         ui.Label("Camera Preview")
@@ -214,6 +261,11 @@ class MobilityGenExtension(omni.ext.IExt):
                             )
                         except Exception:
                             pass
+                    with ui.HStack(height=26):
+                        self._path_planning_button = ui.Button(
+                            "Path Planning Settings",
+                            clicked_fn=self._open_path_planning_window,
+                        )
                 
                     # -- Build button --
                     ui.Button("Build", clicked_fn=self.build_scenario)
@@ -263,60 +315,144 @@ class MobilityGenExtension(omni.ext.IExt):
                         ui.Button("Start Recording", clicked_fn=self.enable_recording)
                         ui.Button("Stop Recording", clicked_fn=self.disable_recording)
 
+        self._sync_path_planning_button_state()
+        self._load_path_planning_models_from_robot()
         self.update_recording_count()
         self.clear_recording()
 
     def build_occ_map_frame(self):
         if self.scenario is not None:
-            with ui.VStack():
-                image_widget = ui.ImageWithProvider(
-                    self._occupancy_map_image_provider
-                )
+            self._update_occ_map_goal_info_text()
+            with ui.VStack(spacing=6):
+                with ui.HStack(height=42):
+                    ui.Label("Goal Info", width=72)
+                    self._occ_map_goal_info_label = ui.Label(self._occ_map_goal_info_text)
+                with ui.HStack():
+                    ui.ImageWithProvider(
+                        self._occupancy_map_image_provider
+                    )
 
     def draw_occ_map(self):
         if self.scenario is not None:
             image = self.scenario.occupancy_map.ros_image().copy().convert("RGBA")
             data = list(image.tobytes())
             self._occupancy_map_image_provider.set_bytes_data(data, [image.width, image.height])
+            self._update_occ_map_goal_info_text()
             self._occ_map_frame.rebuild()
 
+    def _update_occ_map_goal_info_text(self):
+        scenario = getattr(self, "scenario", None)
+        if scenario is None:
+            text = "Goal info: no active scenario."
+        else:
+            path_buffer = getattr(scenario, "target_path", None)
+            try:
+                path = path_buffer.get_value() if path_buffer is not None else None
+            except Exception:
+                path = None
+            if path is None or len(path) < 2:
+                text = "Goal info: no target path."
+            else:
+                try:
+                    path_np = np.asarray(path, dtype=np.float32)
+                    goal = path_np[-1]
+                    prev = path_np[-2]
+                    heading = math.degrees(math.atan2(float(goal[1] - prev[1]), float(goal[0] - prev[0])))
+                    text = (
+                        f"Goal XY:\n({goal[0]:+.2f}, {goal[1]:+.2f})\n"
+                        f"Heading:\n{heading:+.1f} deg\n"
+                        f"Path pts:\n{len(path_np)}"
+                    )
+                except Exception:
+                    text = "Goal info: failed to read path."
+        self._occ_map_goal_info_text = text
+        try:
+            if self._occ_map_goal_info_label is not None:
+                self._occ_map_goal_info_label.text = text
+        except Exception:
+            pass
+
     def _build_sensor_preview_frame(self):
-        with ui.VStack(spacing=4, height=0):
-            with ui.HStack(height=26):
-                ui.Label("Camera Preview")
-                if len(self._sensor_preview_camera_names) > 0:
-                    idx = min(self._sensor_preview_selected_index, len(self._sensor_preview_camera_names) - 1)
-                    combo = ui.ComboBox(idx, *self._sensor_preview_camera_names)
-                    self._sensor_preview_combo = combo
+        compact = self._is_sensor_preview_compact()
+        self._sensor_preview_compact_layout = compact
+        pose_panel_height = 230 if self._sensor_preview_mode == "robust" else 180
+        title_height = 34 if compact else 24
+        section_height = 50 if compact else 42
+        camera_combo_width = 240 if compact else 300
+        mode_combo_width = 130 if compact else 160
+        with ui.VStack(spacing=8, height=0):
+            with ui.HStack(height=title_height):
+                ui.Label(self._sensor_preview_title_text("Camera Preview"))
+                ui.Spacer()
+            with ui.VStack(spacing=2, height=section_height):
+                ui.Label(self._sensor_preview_title_text("RGB Data"))
+                with ui.HStack(height=24):
+                    if len(self._sensor_preview_camera_names) > 0:
+                        idx = min(self._sensor_preview_selected_index, len(self._sensor_preview_camera_names) - 1)
+                        camera_combo = ui.ComboBox(idx, *self._sensor_preview_camera_names, width=camera_combo_width)
+                        self._sensor_preview_combo = camera_combo
+                        try:
+                            camera_combo.model.get_item_value_model().add_value_changed_fn(
+                                self._on_sensor_preview_camera_changed
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        self._sensor_preview_combo = None
+                        ui.Label("Waiting for RGB data")
+                    ui.Spacer()
+            with ui.VStack(spacing=2, height=section_height):
+                ui.Label(self._sensor_preview_title_text("Mode"))
+                with ui.HStack(height=24):
+                    mode_combo = ui.ComboBox(
+                        self._preview_mode_items.index(self._sensor_preview_mode),
+                        *self._preview_mode_items,
+                        width=mode_combo_width,
+                    )
                     try:
-                        combo.model.get_item_value_model().add_value_changed_fn(
-                            self._on_sensor_preview_camera_changed
+                        mode_combo.model.get_item_value_model().add_value_changed_fn(
+                            self._on_sensor_preview_mode_changed
                         )
                     except Exception:
                         pass
-                else:
-                    self._sensor_preview_combo = None
-                    ui.Label("(waiting for RGB data)")
-            with ui.HStack(height=20):
-                ui.Label("Resolution")
-                ui.Label(f"{self._sensor_preview_target_width}x{self._sensor_preview_target_height}")
-            with ui.HStack(height=self._sensor_preview_target_height + 10):
-                ui.Spacer(width=6)
+                    ui.Spacer()
+            with ui.VStack(spacing=2, height=section_height):
+                ui.Label(self._sensor_preview_title_text("Resolution"))
+                with ui.HStack(height=20):
+                    ui.Label(f"{self._sensor_preview_target_width}x{self._sensor_preview_target_height}")
+                    ui.Spacer()
+            with ui.HStack(height=self._sensor_preview_target_height + 12):
+                ui.Spacer()
                 ui.ImageWithProvider(
                     self._sensor_preview_image_provider,
                     width=self._sensor_preview_target_width,
                     height=self._sensor_preview_target_height,
                 )
-                ui.Spacer(width=6)
-            ui.Spacer(height=6)
-            ui.Label("Sensor Poses Relative To Robot")
-            self._sensor_pose_label = ui.Label(self._sensor_pose_text)
+                ui.Spacer()
+            ui.Spacer(height=4)
+            self._sensor_pose_header_label = ui.Label("Sensor Poses Relative To Robot")
+            with ui.ScrollingFrame(height=pose_panel_height):
+                self._sensor_pose_label = ui.Label(self._sensor_pose_text)
 
     def _build_lidar_preview_frame(self):
         with ui.VStack(spacing=6, height=0):
             with ui.HStack(height=24):
                 ui.Label("LiDAR Preview (Top-Down)")
-                ui.Spacer(width=8)
+                ui.Spacer()
+                ui.Label("Mode", width=42)
+                mode_combo = ui.ComboBox(
+                    self._preview_mode_items.index(self._lidar_preview_mode),
+                    *self._preview_mode_items,
+                    width=120,
+                )
+                try:
+                    mode_combo.model.get_item_value_model().add_value_changed_fn(
+                        self._on_lidar_preview_mode_changed
+                    )
+                except Exception:
+                    pass
+            with ui.HStack(height=20):
+                ui.Label("Resolution")
                 ui.Label(f"{self._lidar_preview_target_size}x{self._lidar_preview_target_size}")
             with ui.HStack(height=22):
                 ui.Label("Auto Range")
@@ -382,19 +518,257 @@ class MobilityGenExtension(omni.ext.IExt):
                 except Exception:
                     pass
             with ui.HStack(height=self._lidar_preview_target_size + 8):
-                ui.Spacer(width=6)
+                ui.Spacer()
                 ui.ImageWithProvider(
                     self._lidar_preview_image_provider,
                     width=self._lidar_preview_target_size,
                     height=self._lidar_preview_target_size,
                 )
-                ui.Spacer(width=6)
+                ui.Spacer()
             self._lidar_preview_stats_label = ui.Label(self._lidar_preview_stats_text)
+
+    def _get_sensor_preview_window_width(self) -> int:
+        try:
+            width = getattr(self._sensor_preview_window, "width", 0)
+            return int(width) if width is not None else 0
+        except Exception:
+            return 0
+
+    def _is_sensor_preview_compact(self) -> bool:
+        width = self._get_sensor_preview_window_width()
+        if width <= 0:
+            return False
+        return width < 540
+
+    def _sensor_preview_title_text(self, text: str) -> str:
+        if not self._is_sensor_preview_compact():
+            return text
+        replacements = {
+            "Camera Preview": "Camera\nPreview",
+            "RGB Data": "RGB\nData",
+            "Resolution": "Resolu-\ntion",
+        }
+        return replacements.get(text, text)
 
     def _toggle_lidar_preview(self):
         self._set_lidar_preview_enabled(
             not bool(getattr(self, "_lidar_preview_enabled", False))
         )
+
+    def _get_selected_scenario_name(self) -> str:
+        try:
+            index = self.scenario_combo_box.model.get_item_value_model().get_value_as_int()
+            return list(SCENARIOS.names())[index]
+        except Exception:
+            return ""
+
+    def _get_selected_robot_type(self):
+        try:
+            index = self.robot_combo_box.model.get_item_value_model().get_value_as_int()
+            return ROBOTS.get_index(index)
+        except Exception:
+            return None
+
+    def _is_path_planning_selected(self) -> bool:
+        return self._get_selected_scenario_name() == "RandomPathFollowingScenarioRearSteer"
+
+    def _sync_path_planning_button_state(self):
+        try:
+            if self._path_planning_button is not None:
+                self._path_planning_button.enabled = self._is_path_planning_selected()
+        except Exception:
+            pass
+
+    def _apply_sensor_preview_mode_settings(self):
+        if self._sensor_preview_mode == "robust":
+            self._sensor_preview_target_width = 432
+            self._sensor_preview_target_height = 243
+            try:
+                self._sensor_preview_window.width = 640
+                self._sensor_preview_window.height = 700
+            except Exception:
+                pass
+        else:
+            self._sensor_preview_target_width = 288
+            self._sensor_preview_target_height = 162
+            try:
+                self._sensor_preview_window.width = 500
+                self._sensor_preview_window.height = 560
+            except Exception:
+                pass
+
+    def _apply_lidar_preview_mode_settings(self):
+        if self._lidar_preview_mode == "robust":
+            self._lidar_preview_target_size = 300
+            self._lidar_preview_history_frames = max(6, int(self._lidar_preview_history_frames))
+            self._lidar_preview_history_max_points_per_frame = 1800
+            try:
+                self._lidar_preview_history_frames_model.set_value(self._lidar_preview_history_frames)
+            except Exception:
+                pass
+            try:
+                self._lidar_preview_window.width = 420
+                self._lidar_preview_window.height = 560
+            except Exception:
+                pass
+        else:
+            self._lidar_preview_target_size = 180
+            self._lidar_preview_history_frames = min(int(self._lidar_preview_history_frames), 2)
+            self._lidar_preview_history_max_points_per_frame = 600
+            try:
+                self._lidar_preview_history_frames_model.set_value(self._lidar_preview_history_frames)
+            except Exception:
+                pass
+            try:
+                self._lidar_preview_window.width = 280
+                self._lidar_preview_window.height = 360
+            except Exception:
+                pass
+        self._lidar_preview_history = self._lidar_preview_history[-self._lidar_preview_history_frames:]
+
+    def _on_sensor_preview_mode_changed(self, model):
+        try:
+            index = int(model.get_value_as_int())
+        except Exception:
+            try:
+                index = int(model.as_int)
+            except Exception:
+                index = 0
+        index = int(np.clip(index, 0, len(self._preview_mode_items) - 1))
+        self._sensor_preview_mode = self._preview_mode_items[index]
+        self._apply_sensor_preview_mode_settings()
+        try:
+            self._sensor_preview_frame.rebuild()
+        except Exception:
+            pass
+        try:
+            self._refresh_sensor_preview(self._sensor_preview_latest_camera_map)
+        except Exception:
+            pass
+
+    def _on_lidar_preview_mode_changed(self, model):
+        try:
+            index = int(model.get_value_as_int())
+        except Exception:
+            try:
+                index = int(model.as_int)
+            except Exception:
+                index = 0
+        index = int(np.clip(index, 0, len(self._preview_mode_items) - 1))
+        self._lidar_preview_mode = self._preview_mode_items[index]
+        self._apply_lidar_preview_mode_settings()
+        try:
+            self._lidar_preview_frame.rebuild()
+        except Exception:
+            pass
+        try:
+            self._refresh_lidar_preview(self._sensor_preview_latest_pointcloud, update_history=False)
+        except Exception:
+            pass
+
+    def _load_path_planning_models_from_robot(self, robot=None):
+        robot = robot if robot is not None else getattr(getattr(self, "scenario", None), "robot", None)
+        if robot is None:
+            robot_type = self._get_selected_robot_type()
+            robot = robot_type
+        if robot is None:
+            return
+        for key, model in self._path_planning_models.items():
+            try:
+                value = getattr(robot, key)
+            except Exception:
+                continue
+            try:
+                model.set_value(value)
+            except Exception:
+                pass
+
+    def _apply_path_planning_settings(self):
+        scenario = getattr(self, "scenario", None)
+        robot = getattr(scenario, "robot", None)
+        if robot is None:
+            self._update_path_planning_info("Build a path-planning scenario first.")
+            return
+        for key, model in self._path_planning_models.items():
+            try:
+                if "points" in key or "iterations" in key:
+                    value = int(model.as_int)
+                else:
+                    value = float(model.as_float)
+            except Exception:
+                continue
+            setattr(robot, key, value)
+        if scenario is not None and type(scenario).__name__ == "RandomPathFollowingScenarioRearSteer":
+            try:
+                scenario._v_nom = float(robot.path_following_speed)
+                scenario._k_ang = float(robot.path_following_angular_gain)
+                scenario._stop_dist = float(robot.path_following_stop_distance_threshold)
+                scenario._lookahead = float(robot.path_following_target_point_offset_meters)
+                scenario._delta_cmd_lim = float(
+                    np.clip(
+                        getattr(robot, "path_following_max_steer_command", 0.45),
+                        0.12,
+                        getattr(robot, "effective_steer_limit", getattr(robot, "max_steer_angle", 0.6)),
+                    )
+                )
+                scenario._delta_rate_limit = float(robot.path_following_delta_rate_limit)
+                scenario._lookahead_min = float(robot.path_following_lookahead_min)
+                scenario._lookahead_max = float(robot.path_following_lookahead_max)
+                scenario._safety_points = int(robot.path_following_safety_points)
+                scenario._safety_margin = float(robot.path_following_safety_margin)
+                scenario._min_v_cmd = float(robot.path_following_min_speed)
+                scenario._path_smoothing_iterations = int(robot.path_following_smoothing_iterations)
+            except Exception:
+                pass
+            self._update_path_planning_info("Applied to current path-planning scenario.")
+        else:
+            self._update_path_planning_info("Applied to robot defaults; rebuild to use in path planning.")
+
+    def _update_path_planning_info(self, text: str):
+        if self._path_planning_info_label is not None:
+            self._path_planning_info_label.text = text
+
+    def _open_path_planning_window(self):
+        self._load_path_planning_models_from_robot()
+        self._update_path_planning_info("Adjust values and click Apply.")
+        try:
+            self._path_planning_window.visible = True
+        except Exception:
+            pass
+        try:
+            self._path_planning_frame.rebuild()
+        except Exception:
+            pass
+
+    def _build_path_planning_frame(self):
+        with ui.VStack(spacing=6, height=0):
+            ui.Label("Path Planning Parameters")
+            with ui.HStack():
+                ui.Button("Load From Robot", clicked_fn=lambda: self._load_path_planning_models_from_robot())
+                ui.Button("Apply", clicked_fn=self._apply_path_planning_settings)
+            field_specs = [
+                ("Speed", "path_following_speed"),
+                ("Angular Gain", "path_following_angular_gain"),
+                ("Stop Dist", "path_following_stop_distance_threshold"),
+                ("Target Offset", "path_following_target_point_offset_meters"),
+                ("Max Steer Cmd", "path_following_max_steer_command"),
+                ("Delta Rate", "path_following_delta_rate_limit"),
+                ("Lookahead Min", "path_following_lookahead_min"),
+                ("Lookahead Max", "path_following_lookahead_max"),
+                ("Safety Points", "path_following_safety_points"),
+                ("Safety Margin", "path_following_safety_margin"),
+                ("Min Speed", "path_following_min_speed"),
+                ("Smooth Iters", "path_following_smoothing_iterations"),
+            ]
+            for label, key in field_specs:
+                with ui.HStack(height=22):
+                    ui.Label(label, width=120)
+                    model = self._path_planning_models[key]
+                    if "points" in key or "iterations" in key:
+                        ui.IntField(model=model, width=90, height=20)
+                    else:
+                        ui.FloatField(model=model, width=90, height=20)
+            self._path_planning_info_label = ui.Label("Select path planning and click Load From Robot.")
 
     def _set_sensor_preview_enabled(self, enabled: bool):
         enabled = bool(enabled)
@@ -434,6 +808,7 @@ class MobilityGenExtension(omni.ext.IExt):
         self._lidar_preview_enabled = enabled
         if not enabled:
             self._lidar_preview_history = []
+            self._lidar_preview_smoothed_range = None
         try:
             self._lidar_preview_window.visible = enabled
         except Exception:
@@ -483,6 +858,12 @@ class MobilityGenExtension(omni.ext.IExt):
             except Exception:
                 enabled = False
         self._set_sensor_preview_enabled(enabled)
+
+    def _on_scenario_selection_changed(self, *_args):
+        self._sync_path_planning_button_state()
+
+    def _on_robot_selection_changed(self, *_args):
+        self._load_path_planning_models_from_robot()
 
     def _on_lidar_preview_params_changed(self, *_args):
         try:
@@ -804,6 +1185,13 @@ class MobilityGenExtension(omni.ext.IExt):
         return camera_map
 
     def _refresh_sensor_preview(self, camera_map: dict):
+        compact = self._is_sensor_preview_compact()
+        if compact != getattr(self, "_sensor_preview_compact_layout", False):
+            self._sensor_preview_compact_layout = compact
+            try:
+                self._sensor_preview_frame.rebuild()
+            except Exception:
+                pass
         if not isinstance(camera_map, dict):
             self._update_sensor_pose_preview_text()
             return
@@ -955,13 +1343,15 @@ class MobilityGenExtension(omni.ext.IExt):
         self._format_lidar_preview_stats(status=backend_status, note="no pointcloud data")
 
         current_pts = self._select_lidar_preview_points(pointcloud_state)
-        if current_pts is None:
+        history_sets = [pts for pts in getattr(self, "_lidar_preview_history", []) if pts is not None and len(pts) > 0]
+        if current_pts is None and len(history_sets) == 0:
             return canvas
 
         try:
-            history_sets = [pts for pts in getattr(self, "_lidar_preview_history", []) if pts is not None and len(pts) > 0]
-            draw_sets = history_sets + [current_pts]
-            combined = np.concatenate(draw_sets, axis=0) if len(draw_sets) > 1 else current_pts
+            draw_sets = list(history_sets)
+            if current_pts is not None:
+                draw_sets.append(current_pts)
+            combined = np.concatenate(draw_sets, axis=0) if len(draw_sets) > 1 else draw_sets[0]
 
             x = combined[:, 0]
             y = combined[:, 1]
@@ -977,9 +1367,17 @@ class MobilityGenExtension(omni.ext.IExt):
             # Robust dynamic range (meters), clamped for stable visualization.
             if bool(getattr(self, "_lidar_preview_auto_range", True)):
                 r95 = float(np.percentile(d, 95)) if d.size > 0 else 8.0
-                lidar_range = float(np.clip(r95, 4.0, 20.0))
+                raw_range = float(np.clip(r95, 4.0, 20.0))
+                if self._lidar_preview_smoothed_range is None:
+                    self._lidar_preview_smoothed_range = raw_range
+                alpha = 0.18 if self._lidar_preview_mode == "robust" else 0.35
+                self._lidar_preview_smoothed_range = (
+                    (1.0 - alpha) * float(self._lidar_preview_smoothed_range) + alpha * raw_range
+                )
+                lidar_range = float(self._lidar_preview_smoothed_range)
             else:
                 lidar_range = float(max(1.0, int(getattr(self, "_lidar_preview_manual_range_m", 8))))
+                self._lidar_preview_smoothed_range = lidar_range
             scale = (size - 1) / (2.0 * lidar_range)
 
             # Top-down: +x forward (up in image), +y left (left in image).
@@ -989,7 +1387,7 @@ class MobilityGenExtension(omni.ext.IExt):
             if not np.any(inside):
                 self._format_lidar_preview_stats(
                     status=backend_status,
-                    current_points=current_pts.shape[0],
+                    current_points=0 if current_pts is None else current_pts.shape[0],
                     shown_points=0,
                     lidar_range=lidar_range,
                     shape=tuple(combined.shape),
@@ -997,7 +1395,7 @@ class MobilityGenExtension(omni.ext.IExt):
                     y=(float(np.min(y)), float(np.max(y))),
                     z=(float(np.min(z)), float(np.max(z))),
                     history_frames=len(history_sets),
-                    note=f"0/{combined.shape[0]} points inside view",
+                    note="rendering history only" if current_pts is None else f"0/{combined.shape[0]} points inside view",
                 )
                 return canvas
 
@@ -1046,7 +1444,7 @@ class MobilityGenExtension(omni.ext.IExt):
                 offset += count
             self._format_lidar_preview_stats(
                 status=backend_status,
-                current_points=current_pts.shape[0],
+                current_points=0 if current_pts is None else current_pts.shape[0],
                 shown_points=shown_points,
                 lidar_range=lidar_range,
                 shape=tuple(combined.shape),
@@ -1224,9 +1622,11 @@ class MobilityGenExtension(omni.ext.IExt):
         scenario = getattr(self, "scenario", None)
         robot = getattr(scenario, "robot", None) if scenario is not None else None
         if robot is None:
-            text = "Sensor poses: no active scenario."
+            text = "No active scenario."
             self._sensor_pose_text = text
             try:
+                if self._sensor_pose_header_label is not None:
+                    self._sensor_pose_header_label.text = "Sensor Poses Relative To Robot"
                 if self._sensor_pose_label is not None:
                     self._sensor_pose_label.text = text
             except Exception:
@@ -1240,9 +1640,11 @@ class MobilityGenExtension(omni.ext.IExt):
         robot_path = getattr(robot, "prim_path", "/World/robot")
         robot_prim = stage.GetPrimAtPath(robot_path)
         if robot_prim is None or not robot_prim.IsValid():
-            text = f"Sensor poses: robot prim not found ({robot_path})"
+            text = f"Robot prim not found: {robot_path}"
             self._sensor_pose_text = text
             try:
+                if self._sensor_pose_header_label is not None:
+                    self._sensor_pose_header_label.text = "Sensor Poses Relative To Robot"
                 if self._sensor_pose_label is not None:
                     self._sensor_pose_label.text = text
             except Exception:
@@ -1309,6 +1711,8 @@ class MobilityGenExtension(omni.ext.IExt):
         text = "\n".join(lines)
         self._sensor_pose_text = text
         try:
+            if self._sensor_pose_header_label is not None:
+                self._sensor_pose_header_label.text = ""
             if self._sensor_pose_label is not None:
                 self._sensor_pose_label.text = text
         except Exception:
@@ -1940,6 +2344,8 @@ class MobilityGenExtension(omni.ext.IExt):
 
                 self.config = config
                 self.scenario = await build_scenario_from_config(config)
+                self._load_path_planning_models_from_robot(getattr(self.scenario, "robot", None))
+                self._sync_path_planning_button_state()
                 try:
                     if bool(getattr(self, "_sensor_preview_enabled", True)):
                         self.scenario.enable_rgb_rendering()

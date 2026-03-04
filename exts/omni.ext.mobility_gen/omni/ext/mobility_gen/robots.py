@@ -500,8 +500,8 @@ class FourWheelRearSteerRobot_V1(Robot):
 
     # Fine manual adjustments applied after auto-fit/fallback translation.
     front_camera_mount_adjustment: Tuple[float, float, float] = (0.10, 0.0, 0.05)
-    fisheye_left_mount_adjustment: Tuple[float, float, float] = (0.0, -0.05, 0.10)
-    fisheye_right_mount_adjustment: Tuple[float, float, float] = (0.0, 0.05, 0.10)
+    fisheye_left_mount_adjustment: Tuple[float, float, float] = (0.0, 0.18, 0.10)
+    fisheye_right_mount_adjustment: Tuple[float, float, float] = (0.0, -0.18, 0.10)
     lidar_mount_adjustment: Tuple[float, float, float] = (0.0, 0.0, 0.15)
 
     # Auto-fit shape heuristics relative to body bounds.

@@ -159,6 +159,18 @@ class RandomPathFollowingScenarioRearSteer(Scenario):
         self._min_v_cmd = float(getattr(self.robot, "path_following_min_speed", 0.18))
         self._last_v_cmd = 0.0
         self._blocked_steps = 0
+        self._stall_steps = 0
+        self._last_progress_s = None
+        self._goal_idle_steps = 0
+        self._stall_progress_epsilon = float(
+            getattr(self.robot, "path_following_stall_progress_epsilon", 0.01)
+        )
+        self._stall_replan_steps = int(
+            getattr(self.robot, "path_following_stall_replan_steps", 30)
+        )
+        self._goal_idle_replan_steps = int(
+            getattr(self.robot, "path_following_goal_idle_replan_steps", 75)
+        )
         self._planner_info_printed = False
 
     # ---------- utilidades ----------
@@ -224,11 +236,41 @@ class RandomPathFollowingScenarioRearSteer(Scenario):
         lookahead = self._lookahead + 0.5 * abs(self._last_v_cmd) - 0.35 * abs(heading_error)
         return float(np.clip(lookahead, self._lookahead_min, self._lookahead_max))
 
+    def _path_array_or_none(self, path) -> np.ndarray | None:
+        try:
+            arr = np.asarray(path, dtype=np.float32)
+        except Exception:
+            return None
+        if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] < 2:
+            return None
+        arr = arr[:, :2]
+        if not np.isfinite(arr).all():
+            return None
+        return arr
+
+    def _build_short_forward_fallback_path(self) -> np.ndarray | None:
+        pose = self.robot.get_pose_2d()
+        origin = np.array([float(pose.x), float(pose.y)], dtype=np.float32)
+        forward = np.array([math.cos(float(pose.theta)), math.sin(float(pose.theta))], dtype=np.float32)
+        candidate_distances = (0.8, 1.2, 1.6)
+        points = [origin]
+        for dist in candidate_distances:
+            pt = origin + float(dist) * forward
+            q = Point2d(x=float(pt[0]), y=float(pt[1]))
+            if self.buffered_occupancy_map.check_world_point_in_freespace(q):
+                points.append(pt)
+        if len(points) < 2:
+            return None
+        return np.asarray(points, dtype=np.float32)
+
     def _set_random_target_path(self):
         """Gera um caminho aleatório a partir da pose atual."""
         if not self._planner_info_printed:
             print(f"[RandomPathFollowingRearSteer] planner backend: {self._planner_backend_info()}")
             self._planner_info_printed = True
+
+        previous_path = self._path_array_or_none(self.target_path.get_value())
+        last_error = None
 
         # Caminho primário: planner C++ (via mobility_gen_path_planner)
         # Fallback: planner do robô (quando disponível)
@@ -238,36 +280,56 @@ class RandomPathFollowingScenarioRearSteer(Scenario):
         )
         freespace = self.buffered_occupancy_map.freespace_mask()
         start = (int(start_px[0, 1]), int(start_px[0, 0]))  # planner usa (row, col) = (y, x)
+        attempts = 6
+        for _ in range(attempts):
+            try:
+                if _generate_paths is not None:
+                    output = _generate_paths(start, freespace)
+                    end = self._choose_endpoint(output)
+                    path_px = output.unroll_path(end)
+                    path_px = path_px[:, ::-1]  # (y,x) -> (x,y)
+                    path = self.occupancy_map.pixel_to_world_numpy(path_px)
+                elif hasattr(self.robot, "plan_path_from_occupancy_map"):
+                    path_list = self.robot.plan_path_from_occupancy_map(self.occupancy_map)
+                    path = np.asarray(path_list, dtype=np.float32)
+                else:
+                    raise RuntimeError(
+                        "mobility_gen_path_planner is unavailable and no robot fallback planner was found. "
+                        "Install with Isaac python: ./app/python.sh -m pip install -e path_planner"
+                    )
+            except Exception as exc:
+                last_error = exc
+                if hasattr(self.robot, "plan_path_from_occupancy_map"):
+                    try:
+                        path_list = self.robot.plan_path_from_occupancy_map(self.occupancy_map)
+                        path = np.asarray(path_list, dtype=np.float32)
+                        print(f"[RandomPathFollowingRearSteer] planner fallback via robot after error: {exc}")
+                    except Exception as fallback_exc:
+                        last_error = fallback_exc
+                        continue
+                else:
+                    continue
 
-        try:
-            if _generate_paths is not None:
-                output = _generate_paths(start, freespace)
-                end = self._choose_endpoint(output)
-                path_px = output.unroll_path(end)
-                path_px = path_px[:, ::-1]  # (y,x) -> (x,y)
-                path = self.occupancy_map.pixel_to_world_numpy(path_px)
-            elif hasattr(self.robot, "plan_path_from_occupancy_map"):
-                path_list = self.robot.plan_path_from_occupancy_map(self.occupancy_map)
-                path = np.asarray(path_list, dtype=np.float32)
-            else:
-                raise RuntimeError(
-                    "mobility_gen_path_planner is unavailable and no robot fallback planner was found. "
-                    "Install with Isaac python: ./app/python.sh -m pip install -e path_planner"
-                )
-        except Exception as exc:
-            if hasattr(self.robot, "plan_path_from_occupancy_map"):
-                path_list = self.robot.plan_path_from_occupancy_map(self.occupancy_map)
-                path = np.asarray(path_list, dtype=np.float32)
-                print(f"[RandomPathFollowingRearSteer] planner fallback via robot after error: {exc}")
-            else:
-                raise
+            path = self._path_array_or_none(self._smooth_path(np.asarray(path, dtype=np.float32)))
+            if path is not None:
+                self.target_path.set_value(path)
+                self._helper = PathHelper(path)
+                return True
 
-        path = self._smooth_path(path.astype(np.float32))
-        if path is None or len(path) < 2:
-            raise RuntimeError("Generated path is invalid (needs at least 2 points).")
+        fallback_path = self._build_short_forward_fallback_path()
+        if fallback_path is not None:
+            self.target_path.set_value(fallback_path)
+            self._helper = PathHelper(fallback_path)
+            print("[RandomPathFollowingRearSteer] planner fallback to short forward path")
+            return False
 
-        self.target_path.set_value(path)
-        self._helper = PathHelper(path)
+        if previous_path is not None:
+            self.target_path.set_value(previous_path)
+            self._helper = PathHelper(previous_path)
+            print(f"[RandomPathFollowingRearSteer] replan failed, keeping previous path: {last_error}")
+            return False
+
+        raise RuntimeError(f"Generated path is invalid after retries: {last_error}")
 
     # ---------- ciclo de vida ----------
     def reset(self):
@@ -290,6 +352,9 @@ class RandomPathFollowingScenarioRearSteer(Scenario):
         self._delta = 0.0
         self._last_v_cmd = 0.0
         self._blocked_steps = 0
+        self._stall_steps = 0
+        self._last_progress_s = None
+        self._goal_idle_steps = 0
         self.is_alive = True
         try:
             dt = float(getattr(self.robot, "physics_dt", 0.005))
@@ -341,6 +406,7 @@ class RandomPathFollowingScenarioRearSteer(Scenario):
         dist_to_goal = float(np.linalg.norm(pt_robot - path[-1]))
         if dist_to_goal < self._stop_dist:
             self._set_random_target_path()
+            self._goal_idle_steps = 0
             # após replanejar, nada a fazer nesse frame
             self.robot.action.set_value(np.array([0.0, 0.0], dtype=np.float32))
             self.robot.write_action(step_size)
@@ -395,6 +461,46 @@ class RandomPathFollowingScenarioRearSteer(Scenario):
                 self._blocked_steps = 0
 
         # publica ação e aplica
+        commanded_motion = abs(float(v_cmd)) > max(0.12, 0.4 * self._min_v_cmd)
+        near_goal_idle_threshold = max(self._stop_dist * 1.02, 0.18)
+        if dist_to_goal < near_goal_idle_threshold and abs(float(v_cmd)) < 0.02:
+            self._goal_idle_steps += 1
+        else:
+            self._goal_idle_steps = 0
+        if self._last_progress_s is not None and commanded_motion:
+            progress_delta = float(s_near) - float(self._last_progress_s)
+            if progress_delta < self._stall_progress_epsilon:
+                self._stall_steps += 1
+            else:
+                self._stall_steps = 0
+        else:
+            self._stall_steps = 0
+        self._last_progress_s = float(s_near)
+
+        if self._goal_idle_steps >= self._goal_idle_replan_steps:
+            self._set_random_target_path()
+            self._delta = 0.0
+            self._last_v_cmd = 0.0
+            self._blocked_steps = 0
+            self._stall_steps = 0
+            self._goal_idle_steps = 0
+            self._last_progress_s = None
+            self.robot.action.set_value(np.array([0.0, 0.0], dtype=np.float32))
+            self.robot.write_action(step_size)
+            return True
+
+        if self._stall_steps >= self._stall_replan_steps:
+            self._set_random_target_path()
+            self._delta = 0.0
+            self._last_v_cmd = 0.0
+            self._blocked_steps = 0
+            self._stall_steps = 0
+            self._goal_idle_steps = 0
+            self._last_progress_s = None
+            self.robot.action.set_value(np.array([0.0, 0.0], dtype=np.float32))
+            self.robot.write_action(step_size)
+            return True
+
         self.robot.action.set_value(np.array([v_cmd, delta_cmd], dtype=np.float32))
         self.robot.write_action(step_size)
         self._last_v_cmd = float(v_cmd)
