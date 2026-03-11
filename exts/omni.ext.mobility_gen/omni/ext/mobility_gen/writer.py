@@ -73,6 +73,74 @@ class Writer:
                 if DEBUG_WRITER:
                     print(f"[Writer] Saved RGB '{name}' step={step} -> {image_path}")
 
+    @staticmethod
+    def _save_segmentation_png(arr: np.ndarray, image_path: str):
+        """Save a segmentation array as a PNG, handling all dtype/shape edge cases.
+
+        The PIL version bundled with Isaac Sim has bugs with modes 'F', 'I',
+        and 'I;16' when saving PNG.  We always produce a uint8 array and
+        ensure the buffer is C-contiguous before calling PIL.
+
+        If PIL still fails, we fall back to saving as .npy.
+        """
+        arr = np.asarray(arr)
+
+        # Squeeze ALL singleton dimensions (e.g. (H, W, 1, 1) -> (H, W))
+        arr = arr.squeeze()
+
+        # Ensure basic numeric dtype
+        if arr.dtype.kind not in ('u', 'i', 'f', 'b'):
+            arr = arr.astype(np.int64)
+
+        # Float -> int
+        if arr.dtype.kind == 'f':
+            arr = np.rint(arr).astype(np.int64)
+
+        # Force to a standard signed/unsigned int if not already
+        if arr.dtype.kind == 'i':
+            arr = arr.astype(np.int64)
+        elif arr.dtype.kind == 'u' and arr.dtype.itemsize > 1:
+            arr = arr.astype(np.uint32)
+
+        # Convert to uint8-safe representation
+        if arr.ndim == 2:
+            mn = int(arr.min()) if arr.size > 0 else 0
+            mx = int(arr.max()) if arr.size > 0 else 0
+            # Shift negative values to 0-based range
+            if mn < 0:
+                arr = arr - mn
+                mx = mx - mn
+            if mx <= 255:
+                arr = arr.astype(np.uint8)
+            else:
+                # Encode as 3-channel uint8 (R=low, G=mid, B=high byte)
+                flat = arr.astype(np.uint32)
+                r = (flat & 0xFF).astype(np.uint8)
+                g = ((flat >> 8) & 0xFF).astype(np.uint8)
+                b = ((flat >> 16) & 0xFF).astype(np.uint8)
+                arr = np.stack([r, g, b], axis=-1)
+        elif arr.ndim >= 3:
+            # Multi-channel – cast each channel to uint8
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        elif arr.ndim < 2:
+            # Scalar or 1D – cannot save as image; go straight to .npy
+            npy_path = image_path.rsplit('.', 1)[0] + '.npy'
+            np.save(npy_path, arr)
+            print(f'[Writer] WARNING: segmentation data is {arr.ndim}D; saved as {npy_path}')
+            return
+
+        # Guarantee C-contiguous memory layout (fixes PIL stride bugs)
+        arr = np.ascontiguousarray(arr)
+
+        try:
+            image = PIL.Image.fromarray(arr)
+            image.save(image_path)
+        except Exception as e:
+            # Last-resort fallback: save as .npy so data is not lost
+            npy_path = image_path.rsplit('.', 1)[0] + '.npy'
+            np.save(npy_path, arr)
+            print(f'[Writer] WARNING: PIL PNG save failed ({e}); saved as {npy_path}')
+
     def write_state_dict_segmentation(self, state_segmentation: dict, step: int):
         for name, value in state_segmentation.items():
             if value is not None:
@@ -80,8 +148,7 @@ class Writer:
                 if not os.path.exists(image_folder):
                     os.makedirs(image_folder)
                 image_path = os.path.join(image_folder, f"{step:08d}.png")
-                image = PIL.Image.fromarray(value)
-                image.save(image_path)
+                self._save_segmentation_png(value, image_path)
                 if DEBUG_WRITER:
                     print(f"[Writer] Saved segmentation '{name}' step={step} -> {image_path}")
 
@@ -92,8 +159,7 @@ class Writer:
                 if not os.path.exists(image_folder):
                     os.makedirs(image_folder)
                 image_path = os.path.join(image_folder, f"{step:08d}.png")
-                image = PIL.Image.fromarray(value)
-                image.save(image_path)
+                self._save_segmentation_png(value, image_path)
                 if DEBUG_WRITER:
                     print(f"[Writer] Saved instance-id segmentation '{name}' step={step} -> {image_path}")
 
@@ -107,13 +173,20 @@ class Writer:
                 # Inverse depth 16bit
                 inverse_depth = 1.0 / (1.0 + value)
                 inverse_depth = (65535 * inverse_depth).astype(np.uint16)
-                image = PIL.Image.fromarray(inverse_depth, "I;16")
-                
-                output_path = os.path.join(output_folder, f"{step:08d}.png")
+                inverse_depth = np.ascontiguousarray(inverse_depth)
 
-                image.save(output_path)
+                output_path_png = os.path.join(output_folder, f"{step:08d}.png")
+                output_path_npy = os.path.join(output_folder, f"{step:08d}.npy")
+
+                try:
+                    image = PIL.Image.fromarray(inverse_depth, "I;16")
+                    image.save(output_path_png)
+                except Exception:
+                    # PIL cannot save I;16 as PNG in this version; save as .npy
+                    np.save(output_path_npy, inverse_depth)
+
                 if DEBUG_WRITER:
-                    print(f"[Writer] Saved depth '{name}' step={step} -> {output_path}")
+                    print(f"[Writer] Saved depth '{name}' step={step}")
 
     def write_state_dict_normals(self, state_np: dict, step: int):
         for name, value in state_np.items():

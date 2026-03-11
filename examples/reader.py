@@ -81,6 +81,9 @@ class Reader:
     
     def read_segmentation(self, name: str, index: int):
         step = self.steps[index]
+        npy_path = os.path.join(self.recording_path, "state", "segmentation", name, f"{step:08d}.npy")
+        if os.path.exists(npy_path):
+            return np.load(npy_path)
         image = PIL.Image.open(os.path.join(self.recording_path, "state", "segmentation", name, f"{step:08d}.png"))
         return np.asarray(image)
     
@@ -100,6 +103,11 @@ class Reader:
     
     def read_depth(self, name: str, index: int, eps=1e-6):
         step = self.steps[index]
+        npy_path = os.path.join(self.recording_path, "state", "depth", name, f"{step:08d}.npy")
+        if os.path.exists(npy_path):
+            inverse_depth = np.load(npy_path).astype(np.float32)
+            depth = 65535 / (inverse_depth + eps) - 1.0
+            return depth
         image = PIL.Image.open(os.path.join(self.recording_path, "state", "depth", name, f"{step:08d}.png")).convert("I;16")
         depth = 65535 / (np.asarray(image).astype(np.float32) + eps) - 1.0
         return depth
