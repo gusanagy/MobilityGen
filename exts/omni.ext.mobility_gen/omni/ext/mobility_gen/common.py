@@ -298,6 +298,20 @@ class Module:
         for child in self.children().values():
             child.enable_normals_rendering()
 
+    def enable_lidar_rendering(self):
+        """Enable lidar/point-cloud rendering for this module.
+
+        This mirrors the pattern of other `enable_*` methods and traverses
+        child modules to enable lidar rendering where supported.
+        """
+        for child in self.children().values():
+            # Child modules (sensors) may implement this method.
+            try:
+                child.enable_lidar_rendering()
+            except Exception:
+                # Best-effort: ignore if child doesn't support lidar enabling
+                pass
+
     def write_replay_data(self):
         """Write module state to Isaac Sim for replay
 

@@ -15,6 +15,7 @@
 import os
 import math
 from typing import Tuple, Optional
+import time
 
 import numpy as np
 import omni.usd
@@ -496,7 +497,14 @@ class LidarSensor(Sensor):
             orientation=np.array(orientation),
             config_file_name=config_file_name,
         )
-        
+        # Try to attach the RTX point-cloud annotator right away so
+        # `_annotators` is populated when update_state runs.
+        try:
+            lidar.attach_annotator("IsaacExtractRTXSensorPointCloudNoAccumulator")
+            print(f"[LidarSensor] Attached RTX annotator to {prim_path}")
+        except Exception as e:
+            print(f"[LidarSensor] Warning: Could not attach RTX annotator: {e}")
+
         return cls(lidar)
     
     @classmethod
@@ -521,40 +529,199 @@ class LidarSensor(Sensor):
         Implements fallback: if RTX Lidar fails or returns empty, try replicator annotator 'point_cloud'.
         """
         point_cloud_set = False
+        # Debug: starter info
+        try:
+            prim_path = getattr(self._lidar, 'prim_path', 'N/A')
+        except Exception:
+            prim_path = 'N/A'
+        print(f"[LidarSensor] update_state: entering. prim_path={prim_path}")
+
         try:
             # RTX Lidar annotators
-            if hasattr(self._lidar, '_annotators') and self._lidar._annotators:
+            has_ann = hasattr(self._lidar, '_annotators') and bool(self._lidar._annotators)
+            print(f"[LidarSensor] RTX annotators present: {has_ann}")
+            if has_ann:
+                try:
+                    ann_keys = list(self._lidar._annotators.keys())
+                except Exception:
+                    ann_keys = []
+                print(f"[LidarSensor] RTX annotator keys: {ann_keys}")
+
                 for name, annotator in self._lidar._annotators.items():
-                    data = annotator.get_data()
-                    if data is not None and 'data' in data:
-                        pc = data['data']
-                        if pc is not None and hasattr(pc, 'shape') and pc.shape[0] > 0:
-                            self.point_cloud.set_value(pc)
+                    print(f"[LidarSensor] Trying RTX annotator '{name}'")
+                    try:
+                        data = annotator.get_data()
+                    except Exception as e:
+                        print(f"[LidarSensor] annotator.get_data() exception for '{name}': {e}")
+                        data = None
+
+                    if data is None:
+                        print(f"[LidarSensor] annotator '{name}' returned no data")
+                        continue
+
+                    # If data is a dict-like object, show keys and inspect 'data'
+                    try:
+                        if isinstance(data, dict):
+                            print(f"[LidarSensor] annotator '{name}' data keys: {list(data.keys())}")
+                        else:
+                            print(f"[LidarSensor] annotator '{name}' data type: {type(data)}")
+                    except Exception:
+                        pass
+
+                    try:
+                        if isinstance(data, dict) and 'data' in data:
+                            pc = data['data']
+                        else:
+                            pc = data
+
+                        if pc is not None and hasattr(pc, 'shape') and getattr(pc, 'shape')[0] > 0:
+                            try:
+                                self.point_cloud.set_value(pc)
+                                print(f"[LidarSensor] Got RTX point cloud from '{name}' shape={getattr(pc,'shape',None)}")
+                            except Exception as e:
+                                print(f"[LidarSensor] Failed to set point_cloud buffer: {e}")
                             point_cloud_set = True
-                        if 'intensity' in data and data['intensity'].shape[0] > 0:
-                            self.intensities.set_value(data['intensity'])
-                        if 'distance' in data and data['distance'].shape[0] > 0:
-                            self.distances.set_value(data['distance'])
-                        break
+
+                        if isinstance(data, dict) and 'intensity' in data:
+                            try:
+                                if getattr(data['intensity'], 'shape', (0,))[0] > 0:
+                                    self.intensities.set_value(data['intensity'])
+                                    print(f"[LidarSensor] Got intensity length={getattr(data['intensity'],'shape',None)}")
+                            except Exception:
+                                pass
+                        if isinstance(data, dict) and 'distance' in data:
+                            try:
+                                if getattr(data['distance'], 'shape', (0,))[0] > 0:
+                                    self.distances.set_value(data['distance'])
+                                    print(f"[LidarSensor] Got distance length={getattr(data['distance'],'shape',None)}")
+                            except Exception:
+                                pass
+
+                        if point_cloud_set:
+                            break
+                    except Exception as e:
+                        print(f"[LidarSensor] Error processing annotator '{name}' data: {e}")
+                        continue
         except Exception as e:
             print(f"[LidarSensor] RTX Lidar annotator error: {e}")
 
         # Fallback: replicator annotator 'pointcloud'
         if not point_cloud_set:
+            # Allow disabling replicator fallback during diagnostics to avoid
+            # heavy GPU readbacks that may block the process. Set
+            # MOBILITY_GEN_DISABLE_REPLICATOR_FALLBACK=1 to skip the fallback.
+            if os.environ.get("MOBILITY_GEN_DISABLE_REPLICATOR_FALLBACK", "0") == "1":
+                print("[LidarSensor] Replicator fallback disabled via MOBILITY_GEN_DISABLE_REPLICATOR_FALLBACK")
+                return
             try:
                 import omni.replicator.core as rep
-                # Cria render product se necessário
-                if not hasattr(self, '_render_product') or self._render_product is None:
-                    self._render_product = rep.create.render_product(self._lidar.prim_path, (512, 512), force_new=True)
-                annotator = rep.AnnotatorRegistry.get_annotator("pointcloud")
-                if annotator is not None:
-                    annotator.attach(self._render_product)
-                    pc = annotator.get_data()
-                    if pc is not None and hasattr(pc, 'shape') and pc.shape[0] > 0:
-                        self.point_cloud.set_value(pc)
-                        print("[LidarSensor] Fallback: pointcloud from replicator annotator.")
+                print("[LidarSensor] Attempting fallback: replicator 'pointcloud' annotator")
+                # Create render product if necessary
+                try:
+                    if not hasattr(self, '_render_product') or self._render_product is None:
+                        # Allow smaller render size to reduce GPU readback cost.
+                        size = int(os.environ.get("MOBILITY_GEN_REPLICATOR_RENDER_SIZE", "256"))
+                        print(f"[LidarSensor] Creating render product for prim {prim_path} size={size}")
+                        self._render_product = rep.create.render_product(getattr(self._lidar, 'prim_path', prim_path), (size, size), force_new=True)
+                except Exception as e:
+                    print(f"[LidarSensor] Failed to create render product: {e}")
+
+                try:
+                    annotator = rep.AnnotatorRegistry.get_annotator("pointcloud")
+                except Exception as e:
+                    annotator = None
+                    print(f"[LidarSensor] Error getting replicator annotator: {e}")
+
+                if annotator is None:
+                    print("[LidarSensor] replicator 'pointcloud' annotator not available")
+                else:
+                    try:
+                        annotator.attach(self._render_product)
+                    except Exception as e:
+                        print(f"[LidarSensor] annotator.attach() failed: {e}")
+                    try:
+                        t0 = time.time()
+                        print(f"[LidarSensor] Calling annotator.get_data() for fallback (start)")
+                        raw = annotator.get_data()
+                        t1 = time.time()
+                        print(f"[LidarSensor] annotator.get_data() for fallback returned (elapsed={t1-t0:.3f}s)")
+
+                        # Helper: recursively search for a NxM array-like with M>=3
+                        def _find_point_array(obj):
+                            try:
+                                # numpy array-like
+                                if hasattr(obj, 'shape'):
+                                    arr = np.asarray(obj)
+                                    if arr.ndim >= 2 and arr.shape[1] >= 3 and arr.shape[0] > 0:
+                                        return arr
+                                    return None
+                            except Exception:
+                                pass
+
+                            # dict: search values
+                            if isinstance(obj, dict):
+                                for v in obj.values():
+                                    res = _find_point_array(v)
+                                    if res is not None:
+                                        return res
+                                return None
+
+                            # list/tuple: try to convert or iterate
+                            if isinstance(obj, (list, tuple)):
+                                try:
+                                    arr = np.asarray(obj)
+                                    if arr.ndim >= 2 and arr.shape[1] >= 3 and arr.shape[0] > 0:
+                                        return arr
+                                except Exception:
+                                    pass
+                                for item in obj:
+                                    res = _find_point_array(item)
+                                    if res is not None:
+                                        return res
+                                return None
+
+                            return None
+
+                        pc = None
+                        if raw is not None:
+                            if hasattr(raw, 'shape'):
+                                pc = raw
+                            else:
+                                pc = _find_point_array(raw)
+
+                        if pc is not None and hasattr(pc, 'shape') and getattr(pc, 'shape')[0] > 0:
+                            try:
+                                self.point_cloud.set_value(pc)
+                                point_cloud_set = True
+                                print(f"[LidarSensor] Fallback: extracted pointcloud shape={getattr(pc,'shape',None)}")
+                            except Exception as e:
+                                print(f"[LidarSensor] Failed to set point_cloud buffer from fallback: {e}")
+                        else:
+                            if isinstance(raw, dict):
+                                try:
+                                    keys = list(raw.keys())
+                                except Exception:
+                                    keys = None
+                                print(f"[LidarSensor] Fallback annotator returned no/empty data; dict keys={keys}")
+                            else:
+                                print(f"[LidarSensor] Fallback annotator returned no/empty data: {type(raw)}")
+                    except Exception as e:
+                        print(f"[LidarSensor] Error getting data from fallback annotator: {e}")
             except Exception as e:
                 print(f"[LidarSensor] Fallback failed: {e}")
+
+        # Final debug: report whether we have a point cloud buffer
+        try:
+            pc_val = self.point_cloud.get_value()
+            if pc_val is None:
+                print("[LidarSensor] Final: no point cloud set")
+            else:
+                try:
+                    print(f"[LidarSensor] Final: point_cloud set shape={getattr(pc_val,'shape',None)} type={type(pc_val)}")
+                except Exception:
+                    print(f"[LidarSensor] Final: point_cloud set (unknown shape) type={type(pc_val)}")
+        except Exception:
+            pass
 
         super().update_state()
     
@@ -563,6 +730,17 @@ class LidarSensor(Sensor):
         try:
             self._lidar.resume()
         except:
+            pass
+
+    def enable_lidar_rendering(self):
+        """Compatibility method called from Scenario to enable lidar rendering.
+
+        This delegates to `enable_rendering` which resumes the underlying
+        LidarRtx instance.
+        """
+        try:
+            self.enable_rendering()
+        except Exception:
             pass
     
     def disable_rendering(self):
