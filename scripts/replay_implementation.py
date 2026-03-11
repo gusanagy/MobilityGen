@@ -181,5 +181,9 @@ if __name__ == "__main__":
         writer.write_state_dict_normals(state_normals, step)
         writer.write_state_dict_point_cloud(state_point_cloud, step)
 
-
+    print("[DONE] Replay finished successfully.")
     simulation_app.close()
+    # Force exit: simulation_app.close() can hang during shutdown
+    # (X connection broken, GPU resource cleanup deadlock, etc.)
+    import os as _os
+    _os._exit(0)
