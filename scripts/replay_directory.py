@@ -32,15 +32,24 @@ else:
 
 if __name__ == "__main__":
 
+    def _str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ('yes', 'true', 't', '1'):
+            return True
+        if v.lower() in ('no', 'false', 'f', '0'):
+            return False
+        return bool(v)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=str, default=None)
     parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--rgb_enabled", type=bool, default=True)
-    parser.add_argument("--segmentation_enabled", type=bool, default=True)
-    parser.add_argument("--depth_enabled", type=bool, default=True)
-    parser.add_argument("--instance_id_segmentation_enabled", type=bool, default=True)
-    parser.add_argument("--normals_enabled", type=bool, default=False)
-    parser.add_argument("--lidar_enabled", type=bool, default=True)
+    parser.add_argument("--rgb_enabled", type=_str2bool, default=True)
+    parser.add_argument("--segmentation_enabled", type=_str2bool, default=True)
+    parser.add_argument("--depth_enabled", type=_str2bool, default=True)
+    parser.add_argument("--instance_id_segmentation_enabled", type=_str2bool, default=True)
+    parser.add_argument("--normals_enabled", type=_str2bool, default=False)
+    parser.add_argument("--lidar_enabled", type=_str2bool, default=True)
     parser.add_argument("--render_rt_subframes", type=int, default=1)
     parser.add_argument("--render_interval", type=int, default=1)
     args = parser.parse_args()

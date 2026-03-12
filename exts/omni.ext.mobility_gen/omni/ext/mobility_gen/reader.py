@@ -185,9 +185,8 @@ class Reader:
         full_dict.update(depth_dict)
         full_dict.update(normals_dict)
         full_dict.update(point_cloud_dict)
-        if full_dict.get("point_cloud") is None:
+        if not point_cloud_dict:
             print(f"Warning: No point cloud data found for step {index}. 'point_cloud' key will be set to None.")
-            full_dict["point_cloud"] = None
         full_dict.update(fisheye_dict)
 
         return full_dict

@@ -63,15 +63,78 @@ class Writer:
 
     def write_state_dict_rgb(self, state_rgb: dict, step: int):
         for name, value in state_rgb.items():
-            if value is not None:
-                image_folder = os.path.join(self.path, "state", "rgb", name)
-                if not os.path.exists(image_folder):
-                    os.makedirs(image_folder)
-                image_path = os.path.join(image_folder, f"{step:08d}.jpg")
-                image = PIL.Image.fromarray(value)
-                image.save(image_path)
+            if value is None:
                 if DEBUG_WRITER:
-                    print(f"[Writer] Saved RGB '{name}' step={step} -> {image_path}")
+                    print(f"[Writer] RGB '{name}' is None at step {step}, skipping")
+                continue
+
+            image_folder = os.path.join(self.path, "state", "rgb", name)
+            os.makedirs(image_folder, exist_ok=True)
+
+            try:
+                arr = np.asarray(value)
+                arr = arr.squeeze()
+
+                # Detect common channel-first (C,H,W) shaped images and transpose
+                if arr.ndim == 3 and arr.shape[0] in (1, 3, 4) and arr.shape[2] not in (1, 3, 4):
+                    arr = np.transpose(arr, (1, 2, 0))
+
+                # Grayscale -> RGB
+                if arr.ndim == 2:
+                    arr = np.stack([arr, arr, arr], axis=-1)
+
+                if arr.ndim != 3 or arr.shape[2] < 3:
+                    raise ValueError(f"unexpected rgb array shape {arr.shape}")
+
+                # Convert floats to 0..255 uint8, integers clipped to 0..255
+                if np.issubdtype(arr.dtype, np.floating):
+                    mx = float(np.nanmax(arr)) if arr.size > 0 else 0.0
+                    if mx <= 1.0:
+                        arr = (np.clip(arr, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+                    else:
+                        arr = np.clip(arr, 0.0, 255.0).round().astype(np.uint8)
+                elif np.issubdtype(arr.dtype, np.integer):
+                    if arr.dtype.itemsize > 1:
+                        arr = np.clip(arr, 0, 255).astype(np.uint8)
+                    else:
+                        arr = arr.astype(np.uint8)
+
+                arr = np.ascontiguousarray(arr)
+
+                # Drop alpha if present
+                if arr.shape[2] >= 4:
+                    arr = arr[:, :, :3]
+
+                # Try JPEG first, then PNG, then fallback to .npy
+                image_jpg = os.path.join(image_folder, f"{step:08d}.jpg")
+                try:
+                    PIL.Image.fromarray(arr).save(image_jpg, format="JPEG", quality=95)
+                    if DEBUG_WRITER:
+                        print(f"[Writer] Saved RGB '{name}' step={step} -> {image_jpg}")
+                    continue
+                except Exception as e_jpg:
+                    if DEBUG_WRITER:
+                        print(f"[Writer] JPEG save failed for '{name}' step={step}: {e_jpg}; trying PNG")
+
+                image_png = os.path.join(image_folder, f"{step:08d}.png")
+                try:
+                    PIL.Image.fromarray(arr).save(image_png)
+                    if DEBUG_WRITER:
+                        print(f"[Writer] Saved RGB (png) '{name}' step={step} -> {image_png}")
+                    continue
+                except Exception as e_png:
+                    npy_path = os.path.join(image_folder, f"{step:08d}.npy")
+                    np.save(npy_path, arr)
+                    print(f"[Writer] WARNING: Failed saving RGB as image ('{name}' step={step}): {e_png}; saved as {npy_path}")
+
+            except Exception as e:
+                # Last-resort: save raw value as .npy so data isn't lost
+                try:
+                    npy_path = os.path.join(image_folder, f"{step:08d}.npy")
+                    np.save(npy_path, value)
+                    print(f"[Writer] WARNING: Could not process RGB '{name}' step={step}: {e}; saved raw as {npy_path}")
+                except Exception as e2:
+                    print(f"[Writer] ERROR: failed to save RGB '{name}' step={step}: {e}; fallback failed: {e2}")
 
     @staticmethod
     def _save_segmentation_png(arr: np.ndarray, image_path: str):

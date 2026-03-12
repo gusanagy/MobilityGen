@@ -126,13 +126,10 @@ class Robot(Module):
         prim_rotate_z(main_camera_prim, cls.main_camera_rotation[2])
         prim_translate(main_camera_prim, cls.main_camera_translation)
 
-        # enable RGB rendering so recorder captures images
+        # Do NOT call enable_rgb_rendering here – render products created
+        # before world.reset() become stale.  Let the caller (replay / record
+        # script) call scenario.enable_rgb_rendering() after world.reset().
         sensor = cls.main_camera_type.build(prim_path=camera_path)
-        try:
-            if hasattr(sensor, "cam") and sensor.cam is not None:
-                sensor.cam.enable_rgb_rendering()
-        except Exception as e:
-            print(f"[Robot.build_main_camera] enable_rgb_rendering skipped: {e}")
         return sensor
 
 
@@ -146,13 +143,8 @@ class Robot(Module):
         prim_rotate_y(FisheyeCamera_prim, cls.fisheye_camera_rotation[1])
         prim_rotate_z(FisheyeCamera_prim, cls.fisheye_camera_rotation[2])
         prim_translate(FisheyeCamera_prim, cls.fisheye_camera_translation)
-        # enable RGB rendering so recorder captures images
+        # Do NOT call enable_rgb_rendering here – see build_main_camera.
         sensor = cls.fisheye_camera_type.build(prim_path=camera_path)
-        try:
-            if hasattr(sensor, "cam") and sensor.cam is not None:
-                sensor.cam.enable_rgb_rendering()
-        except Exception as e:
-            print(f"[Robot.build_fisheye_camera] enable_rgb_rendering skipped: {e}")
         return sensor
     
     @classmethod
@@ -212,6 +204,8 @@ class Robot(Module):
         self.robot.set_local_pose(
             self.position.get_value(), self.orientation.get_value()
         )
+        # Ensure physics handle is ready (mirrors set_pose_2d pattern)
+        self.articulation_view.initialize()
         self.articulation_view.set_joint_positions(self.joint_positions.get_value())
         super().write_replay_data()
 
