@@ -113,71 +113,63 @@ if __name__ == "__main__":
 
     print(f"[SETUP] get_world ...", flush=True)
     _t0 = _time.time()
-    try:
-        world = get_world()
-            print("[DEBUG] Entrando no loop de replay...", flush=True)
+    world = get_world()
+    print("[DEBUG] Entrando no loop de replay...", flush=True)
+    for i, step in enumerate(tqdm.tqdm(range(0, num_steps, args.render_interval))):
+        if i == 0:
+            print(f"[DEBUG] Primeira iteração do replay: i={i}, step={step}", flush=True)
+        try:
+            if args.max_steps is not None and i >= args.max_steps:
+                break
+            _loop_t0 = _time.time()
+            print(f"[DEBUG] Loop {i}, step {step}: reading state_dict ...")
+            state_dict = reader.read_state_dict(index=step)
+            print(f"[DEBUG] Loop {i}, step {step}: loading state_dict ...")
+            scenario.load_state_dict(state_dict)
+            print(f"[DEBUG] Loop {i}, step {step}: writing replay data ...")
+            scenario.write_replay_data()
+            print(f"[DEBUG] Loop {i}, step {step}: simulation_app.update (START)")
             try:
-                for i, step in enumerate(tqdm.tqdm(range(0, num_steps, args.render_interval))):
-                    if i == 0:
-                        print(f"[DEBUG] Primeira iteração do replay: i={i}, step={step}", flush=True)
-                    try:
-                        if args.max_steps is not None and i >= args.max_steps:
-                            break
-                        _loop_t0 = _time.time()
-                        print(f"[DEBUG] Loop {i}, step {step}: reading state_dict ...")
-                        state_dict = reader.read_state_dict(index=step)
-                        print(f"[DEBUG] Loop {i}, step {step}: loading state_dict ...")
-                        scenario.load_state_dict(state_dict)
-                        print(f"[DEBUG] Loop {i}, step {step}: writing replay data ...")
-                        scenario.write_replay_data()
-                        print(f"[DEBUG] Loop {i}, step {step}: simulation_app.update (START)")
-                        try:
-                            simulation_app.update()
-                            print(f"[DEBUG] Loop {i}, step {step}: simulation_app.update (DONE)")
-                        except Exception as e:
-                            print(f"[ERROR] Loop {i}, step {step}: simulation_app.update() EXCEPTION: {e}")
-                            raise
-                        print(f"[DEBUG] Loop {i}, step {step}: rep.orchestrator.step (START)")
-                        try:
-                            rep.orchestrator.step(
-                                rt_subframes=args.render_rt_subframes,
-                                delta_time=0.0,
-                                pause_timeline=False,
-                            )
-                            print(f"[DEBUG] Loop {i}, step {step}: rep.orchestrator.step (DONE)")
-                        except Exception as e:
-                            print(f"[ERROR] Loop {i}, step {step}: rep.orchestrator.step() EXCEPTION: {e}")
-                            raise
-                        print(f"[LOOP] step {step} (iter {i}): render done ({_time.time()-_loop_t0:.2f}s)")
-                        print(f"[DEBUG] Loop {i}, step {step}: scenario.update_state ...")
-                        scenario.update_state()
-                        print(f"[DEBUG] Loop {i}, step {step}: scenario.update_state done")
-                        print(f"[DEBUG] Loop {i}, step {step}: collecting state outputs ...")
-                        state_dict = scenario.state_dict_common()
-                        state_rgb = scenario.state_dict_rgb()
-                        state_segmentation = scenario.state_dict_segmentation()
-                        state_depth = scenario.state_dict_depth()
-                        state_normals = scenario.state_dict_normals()
-                        state_point_cloud = scenario.state_dict_point_cloud()
-                        print(f"[DEBUG] Loop {i}, step {step}: writing outputs ...")
-                        writer.write_state_dict_common(state_dict, step)
-                        writer.write_state_dict_rgb(state_rgb, step)
-                        writer.write_state_dict_segmentation(state_segmentation, step)
-                        writer.write_state_dict_depth(state_depth, step)
-                        writer.write_state_dict_normals(state_normals, step)
-                        writer.write_state_dict_point_cloud(state_point_cloud, step)
-                        print(f"[DEBUG] Loop {i}, step {step}: outputs written")
-                    except Exception as e:
-                        print(f"[ERROR] Exceção na iteração {i}, step {step}: {e}", flush=True)
-                        import traceback
-                        traceback.print_exc()
-                        raise
+                simulation_app.update()
+                print(f"[DEBUG] Loop {i}, step {step}: simulation_app.update (DONE)")
             except Exception as e:
-                print(f"[ERROR] Exceção no loop principal de replay: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
+                print(f"[ERROR] Loop {i}, step {step}: simulation_app.update() EXCEPTION: {e}")
                 raise
-        raise
+            print(f"[DEBUG] Loop {i}, step {step}: rep.orchestrator.step (START)")
+            try:
+                rep.orchestrator.step(
+                    rt_subframes=args.render_rt_subframes,
+                    delta_time=0.0,
+                    pause_timeline=False,
+                )
+                print(f"[DEBUG] Loop {i}, step {step}: rep.orchestrator.step (DONE)")
+            except Exception as e:
+                print(f"[ERROR] Loop {i}, step {step}: rep.orchestrator.step() EXCEPTION: {e}")
+                raise
+            print(f"[LOOP] step {step} (iter {i}): render done ({_time.time()-_loop_t0:.2f}s)")
+            print(f"[DEBUG] Loop {i}, step {step}: scenario.update_state ...")
+            scenario.update_state()
+            print(f"[DEBUG] Loop {i}, step {step}: scenario.update_state done")
+            print(f"[DEBUG] Loop {i}, step {step}: collecting state outputs ...")
+            state_dict = scenario.state_dict_common()
+            state_rgb = scenario.state_dict_rgb()
+            state_segmentation = scenario.state_dict_segmentation()
+            state_depth = scenario.state_dict_depth()
+            state_normals = scenario.state_dict_normals()
+            state_point_cloud = scenario.state_dict_point_cloud()
+            print(f"[DEBUG] Loop {i}, step {step}: writing outputs ...")
+            writer.write_state_dict_common(state_dict, step)
+            writer.write_state_dict_rgb(state_rgb, step)
+            writer.write_state_dict_segmentation(state_segmentation, step)
+            writer.write_state_dict_depth(state_depth, step)
+            writer.write_state_dict_normals(state_normals, step)
+            writer.write_state_dict_point_cloud(state_point_cloud, step)
+            print(f"[DEBUG] Loop {i}, step {step}: outputs written")
+        except Exception as e:
+            print(f"[ERROR] Exceção na iteração {i}, step {step}: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            raise
 
     print(f"[SETUP] world.reset ...", flush=True)
     _t0 = _time.time()
