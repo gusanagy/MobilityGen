@@ -20,80 +20,39 @@ a recording.
 
 """
 
-print("[DEBUG] Importing SimulationApp...", flush=True)
-try:
-    from isaacsim import SimulationApp
-    print("[DEBUG] SimulationApp imported.", flush=True)
-except Exception as e:
-    print(f"[ERROR] Failed to import SimulationApp: {e}", flush=True)
-    raise
+from isaacsim import SimulationApp
 
 # Enable MotionBVH so lidar models' motion-corrected BVH is used by RTX lidar.
-print("[DEBUG] Creating SimulationApp...", flush=True)
-try:
-    simulation_app = SimulationApp(launch_config={"headless": True, "enable_motion_bvh": True})
-    print("[DEBUG] SimulationApp created.", flush=True)
-except Exception as e:
-    print(f"[ERROR] Failed to create SimulationApp: {e}", flush=True)
-    raise
+simulation_app = SimulationApp(
+    launch_config={"headless": True, "enable_motion_bvh": True}
+)
 
 import argparse
+import glob
 import os
 import shutil
+
 import numpy as np
-from PIL import Image
-import glob
-import tqdm
-
+import omni.kit.app
 import omni.replicator.core as rep
-
-# Attempt normal import; if running directly (without --ext-folder/--enable)
-# the omni.ext.mobility_gen package may not be on sys.path. Try to
-# auto-inject the local `exts/omni.ext.mobility_gen` path as a fallback
-# so the script can be executed directly for debugging.
-try:
-    from omni.ext.mobility_gen.utils.global_utils import get_world
-    from omni.ext.mobility_gen.writer import Writer
-    from omni.ext.mobility_gen.reader import Reader
-    from omni.ext.mobility_gen.build import load_scenario
-except ModuleNotFoundError:
-    import sys
-    import os
-    script_dir = os.path.dirname(__file__)
-    candidate = os.path.abspath(os.path.join(script_dir, "..", "exts", "omni.ext.mobility_gen"))
-    if os.path.isdir(candidate):
-        sys.path.insert(0, candidate)
-    try:
-        from omni.ext.mobility_gen.utils.global_utils import get_world
-        from omni.ext.mobility_gen.writer import Writer
-        from omni.ext.mobility_gen.reader import Reader
-        from omni.ext.mobility_gen.build import load_scenario
-    except Exception as e:
-        print(f"[Replay] Failed importing omni.ext.mobility_gen after adding {candidate} to sys.path: {e}")
-        raise
-
+import tqdm
+from omni.ext.mobility_gen.build import load_scenario
+from omni.ext.mobility_gen.reader import Reader
+from omni.ext.mobility_gen.utils.global_utils import get_world
+from omni.ext.mobility_gen.writer import Writer
+from PIL import Image
 
 if __name__ == "__main__":
-
-    def _str2bool(v):
-        if isinstance(v, bool):
-            return v
-        if v.lower() in ('yes', 'true', 't', '1'):
-            return True
-        if v.lower() in ('no', 'false', 'f', '0'):
-            return False
-        return bool(v)
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_path", type=str)
     parser.add_argument("--output_path", type=str)
-    parser.add_argument("--rgb_enabled", type=_str2bool, default=True)
-    parser.add_argument("--segmentation_enabled", type=_str2bool, default=True)
-    parser.add_argument("--depth_enabled", type=_str2bool, default=True)
-    parser.add_argument("--instance_id_segmentation_enabled", type=_str2bool, default=True)
-    parser.add_argument("--normals_enabled", type=_str2bool, default=False)
-    parser.add_argument("--lidar_enabled", type=_str2bool, default=True)
-    parser.add_argument("--render_rt_subframes", type=int, default=1)
+    parser.add_argument("--rgb_enabled", type=bool, default=True)
+    parser.add_argument("--segmentation_enabled", type=bool, default=True)
+    parser.add_argument("--depth_enabled", type=bool, default=True)
+    parser.add_argument("--instance_id_segmentation_enabled", type=bool, default=True)
+    parser.add_argument("--normals_enabled", type=bool, default=False)
+    parser.add_argument("--lidar_enabled", type=bool, default=True)
+    parser.add_argument("--render_rt_subframes", type=int, default=5)
     parser.add_argument("--render_interval", type=int, default=1)
     parser.add_argument("--max_steps", type=int, default=None, help="Limit number of replay iterations (diagnostic)")
 
@@ -101,77 +60,17 @@ if __name__ == "__main__":
 
     import time as _time
 
-
-    print(f"[SETUP] load_scenario ...", flush=True)
+    print(f"[SETUP] load_scenario ...")
     _t0 = _time.time()
-    try:
-        scenario = load_scenario(os.path.join(args.input_path))
-        print(f"[SETUP] load_scenario done ({_time.time()-_t0:.1f}s)", flush=True)
-    except Exception as e:
-        print(f"[ERROR] load_scenario failed: {e}", flush=True)
-        raise
+    scenario = load_scenario(os.path.join(args.input_path))
+    print(f"[SETUP] load_scenario done ({_time.time() - _t0:.1f}s)")
 
-    print(f"[SETUP] get_world ...", flush=True)
+    print(f"[SETUP] get_world ...")
     _t0 = _time.time()
     world = get_world()
-    print("[DEBUG] Entrando no loop de replay...", flush=True)
-    for i, step in enumerate(tqdm.tqdm(range(0, num_steps, args.render_interval))):
-        if i == 0:
-            print(f"[DEBUG] Primeira iteração do replay: i={i}, step={step}", flush=True)
-        try:
-            if args.max_steps is not None and i >= args.max_steps:
-                break
-            _loop_t0 = _time.time()
-            print(f"[DEBUG] Loop {i}, step {step}: reading state_dict ...")
-            state_dict = reader.read_state_dict(index=step)
-            print(f"[DEBUG] Loop {i}, step {step}: loading state_dict ...")
-            scenario.load_state_dict(state_dict)
-            print(f"[DEBUG] Loop {i}, step {step}: writing replay data ...")
-            scenario.write_replay_data()
-            print(f"[DEBUG] Loop {i}, step {step}: simulation_app.update (START)")
-            try:
-                simulation_app.update()
-                print(f"[DEBUG] Loop {i}, step {step}: simulation_app.update (DONE)")
-            except Exception as e:
-                print(f"[ERROR] Loop {i}, step {step}: simulation_app.update() EXCEPTION: {e}")
-                raise
-            print(f"[DEBUG] Loop {i}, step {step}: rep.orchestrator.step (START)")
-            try:
-                rep.orchestrator.step(
-                    rt_subframes=args.render_rt_subframes,
-                    delta_time=0.0,
-                    pause_timeline=False,
-                )
-                print(f"[DEBUG] Loop {i}, step {step}: rep.orchestrator.step (DONE)")
-            except Exception as e:
-                print(f"[ERROR] Loop {i}, step {step}: rep.orchestrator.step() EXCEPTION: {e}")
-                raise
-            print(f"[LOOP] step {step} (iter {i}): render done ({_time.time()-_loop_t0:.2f}s)")
-            print(f"[DEBUG] Loop {i}, step {step}: scenario.update_state ...")
-            scenario.update_state()
-            print(f"[DEBUG] Loop {i}, step {step}: scenario.update_state done")
-            print(f"[DEBUG] Loop {i}, step {step}: collecting state outputs ...")
-            state_dict = scenario.state_dict_common()
-            state_rgb = scenario.state_dict_rgb()
-            state_segmentation = scenario.state_dict_segmentation()
-            state_depth = scenario.state_dict_depth()
-            state_normals = scenario.state_dict_normals()
-            state_point_cloud = scenario.state_dict_point_cloud()
-            print(f"[DEBUG] Loop {i}, step {step}: writing outputs ...")
-            writer.write_state_dict_common(state_dict, step)
-            writer.write_state_dict_rgb(state_rgb, step)
-            writer.write_state_dict_segmentation(state_segmentation, step)
-            writer.write_state_dict_depth(state_depth, step)
-            writer.write_state_dict_normals(state_normals, step)
-            writer.write_state_dict_point_cloud(state_point_cloud, step)
-            print(f"[DEBUG] Loop {i}, step {step}: outputs written")
-        except Exception as e:
-            print(f"[ERROR] Exceção na iteração {i}, step {step}: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
-            raise
+    print(f"[SETUP] get_world done ({_time.time() - _t0:.1f}s)")
 
-    print(f"[SETUP] world.reset ...", flush=True)
+    print(f"[SETUP] world.reset ...")
     _t0 = _time.time()
     try:
         world.reset()
@@ -198,19 +97,21 @@ if __name__ == "__main__":
         print(f"[SETUP] enable_depth_rendering ...")
         _t0 = _time.time()
         scenario.enable_depth_rendering()
-        print(f"[SETUP] enable_depth_rendering done ({_time.time()-_t0:.1f}s)")
+        print(f"[SETUP] enable_depth_rendering done ({_time.time() - _t0:.1f}s)")
 
     if args.instance_id_segmentation_enabled:
         print(f"[SETUP] enable_instance_id_segmentation_rendering ...")
         _t0 = _time.time()
         scenario.enable_instance_id_segmentation_rendering()
-        print(f"[SETUP] enable_instance_id_segmentation_rendering done ({_time.time()-_t0:.1f}s)")
+        print(
+            f"[SETUP] enable_instance_id_segmentation_rendering done ({_time.time() - _t0:.1f}s)"
+        )
 
     if args.normals_enabled:
         print(f"[SETUP] enable_normals_rendering ...")
         _t0 = _time.time()
         scenario.enable_normals_rendering()
-        print(f"[SETUP] enable_normals_rendering done ({_time.time()-_t0:.1f}s)")
+        print(f"[SETUP] enable_normals_rendering done ({_time.time() - _t0:.1f}s)")
 
     if args.lidar_enabled:
         print(f"[SETUP] enable_lidar_rendering ...")
@@ -255,46 +156,45 @@ if __name__ == "__main__":
     print(f"\tRender interval: {args.render_interval}")
 
     for i, step in enumerate(tqdm.tqdm(range(0, num_steps, args.render_interval))):
-
         if args.max_steps is not None and i >= args.max_steps:
             break
 
         _loop_t0 = _time.time()
 
-        print(f"[DEBUG] Loop {i}, step {step}: reading state_dict ...")
+        print(f"[LOOP] step {step} (iter {i}): begin")
+        print(f"[LOOP] step {step}: read_state_dict")
         state_dict = reader.read_state_dict(index=step)
-        print(f"[DEBUG] Loop {i}, step {step}: loading state_dict ...")
+        print(f"[LOOP] step {step}: load_state_dict")
         scenario.load_state_dict(state_dict)
-        print(f"[DEBUG] Loop {i}, step {step}: writing replay data ...")
-        scenario.write_replay_data()
-
-        print(f"[DEBUG] Loop {i}, step {step}: simulation_app.update (START)")
+        print(f"[LOOP] step {step}: write_replay_data")
         try:
+            scenario.write_replay_data()
+        except Exception as e:
+            print(f"[WARNING] scenario.write_replay_data failed at step {step}: {e}")
+
+        print(f"[LOOP] step {step}: do render frame updates")
+        for _sf in range(args.render_rt_subframes + 1):
+            t0 = _time.time()
             simulation_app.update()
-            print(f"[DEBUG] Loop {i}, step {step}: simulation_app.update (DONE)")
-        except Exception as e:
-            print(f"[ERROR] Loop {i}, step {step}: simulation_app.update() EXCEPTION: {e}")
-            raise
+            dt = _time.time() - t0
+            if dt > 5.0:
+                print(f"[WARNING] simulation_app.update() took {dt:.1f}s on render subframe {_sf} (step {step})")
+        print(
+            f"[LOOP] step {step} (iter {i}): render done ({_time.time() - _loop_t0:.2f}s)"
+        )
 
-        print(f"[DEBUG] Loop {i}, step {step}: rep.orchestrator.step (START)")
+        t0_state = _time.time()
         try:
-            rep.orchestrator.step(
-                rt_subframes=args.render_rt_subframes,
-                delta_time=0.0,
-                pause_timeline=False,
-            )
-            print(f"[DEBUG] Loop {i}, step {step}: rep.orchestrator.step (DONE)")
+            scenario.update_state()
         except Exception as e:
-            print(f"[ERROR] Loop {i}, step {step}: rep.orchestrator.step() EXCEPTION: {e}")
-            raise
+            print(f"[WARNING] scenario.update_state failed at step {step}: {e}")
+        took_state = _time.time() - t0_state
+        if took_state > 10.0:
+            print(f"[WARNING] update_state took {took_state:.1f}s at step {step}")
+        print(
+            f"[LOOP] step {step} (iter {i}): update_state done ({_time.time() - _loop_t0:.2f}s)"
+        )
 
-        print(f"[LOOP] step {step} (iter {i}): render done ({_time.time()-_loop_t0:.2f}s)")
-
-        print(f"[DEBUG] Loop {i}, step {step}: scenario.update_state ...")
-        scenario.update_state()
-        print(f"[DEBUG] Loop {i}, step {step}: scenario.update_state done")
-
-        print(f"[DEBUG] Loop {i}, step {step}: collecting state outputs ...")
         state_dict = scenario.state_dict_common()
         state_rgb = scenario.state_dict_rgb()
         state_segmentation = scenario.state_dict_segmentation()
@@ -309,11 +209,11 @@ if __name__ == "__main__":
         writer.write_state_dict_depth(state_depth, step)
         writer.write_state_dict_normals(state_normals, step)
         writer.write_state_dict_point_cloud(state_point_cloud, step)
-        print(f"[DEBUG] Loop {i}, step {step}: outputs written")
 
     print("[DONE] Replay finished successfully.")
     simulation_app.close()
     # Force exit: simulation_app.close() can hang during shutdown
     # (X connection broken, GPU resource cleanup deadlock, etc.)
     import os as _os
+
     _os._exit(0)

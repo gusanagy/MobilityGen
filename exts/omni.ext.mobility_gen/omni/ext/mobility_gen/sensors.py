@@ -15,7 +15,6 @@
 import os
 import math
 from typing import Tuple, Optional
-import time
 
 import numpy as np
 import omni.usd
@@ -27,10 +26,6 @@ from isaacsim.core.prims import SingleXFormPrim as XFormPrim
 from omni.ext.mobility_gen.utils.global_utils import get_stage
 from omni.ext.mobility_gen.utils.stage_utils import stage_add_usd_ref
 from omni.ext.mobility_gen.common import Module, Buffer
-
-# Enable verbose sensor debugging via environment variable MOBILITY_GEN_DEBUG
-# Default to '1' to aid diagnostics.
-DEBUG_SENSORS = os.environ.get("MOBILITY_GEN_DEBUG", "1") == "1"
 
 class Sensor(Module):
 
@@ -68,8 +63,7 @@ class Camera(Sensor):
         self.orientation = Buffer()
 
     def enable_rendering(self):
-        if self._render_product is not None:
-            return
+        
         self._render_product = rep.create.render_product(
             self._prim_path,
             self._resolution,
@@ -100,148 +94,88 @@ class Camera(Sensor):
             self.enable_rendering()
         if self._rgb_annotator is not None:
             return
-        self._rgb_annotator = rep.AnnotatorRegistry.get_annotator("LdrColor")
-        self._rgb_annotator.attach(self._render_product)
-        if DEBUG_SENSORS:
-            print(f"[Camera] Attached LdrColor annotator to {self._prim_path}")
+        try:
+            self._rgb_annotator = rep.AnnotatorRegistry.get_annotator("LdrColor")
+            self._rgb_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_rgb_rendering failed: {e}")
 
     def enable_segmentation_rendering(self):
         if self._render_product is None:
             self.enable_rendering()
         if self._segmentation_annotator is not None:
             return
-        self._segmentation_annotator = rep.AnnotatorRegistry.get_annotator(
-            "semantic_segmentation", init_params=dict(colorize=False)
-        )
-        self._segmentation_annotator.attach(self._render_product)
-        if DEBUG_SENSORS:
-            print(f"[Camera] Attached segmentation annotator to {self._prim_path}")
+        try:
+            self._segmentation_annotator = rep.AnnotatorRegistry.get_annotator(
+                "semantic_segmentation", init_params=dict(colorize=False)
+            )
+            self._segmentation_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_segmentation_rendering failed: {e}")
 
     def enable_instance_id_segmentation_rendering(self):
         if self._render_product is None:
             self.enable_rendering()
         if self._instance_id_segmentation_annotator is not None:
             return
-        self._instance_id_segmentation_annotator = rep.AnnotatorRegistry.get_annotator(
-            "instance_id_segmentation", init_params=dict(colorize=False)
-        )
-        self._instance_id_segmentation_annotator.attach(self._render_product)
-        if DEBUG_SENSORS:
-            print(f"[Camera] Attached instance_id_segmentation annotator to {self._prim_path}")
+        try:
+            self._instance_id_segmentation_annotator = rep.AnnotatorRegistry.get_annotator(
+                "instance_id_segmentation", init_params=dict(colorize=False)
+            )
+            self._instance_id_segmentation_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_instance_id_segmentation_rendering failed: {e}")
 
     def enable_depth_rendering(self):
         if self._render_product is None:
             self.enable_rendering()
         if self._depth_annotator is not None:
             return
-        self._depth_annotator = rep.AnnotatorRegistry.get_annotator(
-            "distance_to_camera"
-        )
-        self._depth_annotator.attach(self._render_product)
-        if DEBUG_SENSORS:
-            print(f"[Camera] Attached depth annotator to {self._prim_path}")
+        try:
+            self._depth_annotator = rep.AnnotatorRegistry.get_annotator(
+                "distance_to_camera"
+            )
+            self._depth_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_depth_rendering failed: {e}")
 
     def enable_normals_rendering(self):
         if self._render_product is None:
             self.enable_rendering()
         if self._normals_annotator is not None:
             return
-        self._normals_annotator = rep.AnnotatorRegistry.get_annotator(
-            "normals"
-        )
-        self._normals_annotator.attach(self._render_product)
-        if DEBUG_SENSORS:
-            print(f"[Camera] Attached normals annotator to {self._prim_path}")
+        try:
+            self._normals_annotator = rep.AnnotatorRegistry.get_annotator(
+                "normals"
+            )
+            self._normals_annotator.attach(self._render_product)
+        except Exception as e:
+            print(f"[Camera] enable_normals_rendering failed: {e}")
 
     def update_state(self):
         if self._rgb_annotator is not None:
-            print(f"[DEBUG][Camera] update_state called for {self._prim_path}")
-            try:
-                rgb_data = self._rgb_annotator.get_data()
-                print(f"[DEBUG][Camera] {self._prim_path} rgb_annotator.get_data() returned type={type(rgb_data)}")
-            except Exception as e:
-                rgb_data = None
-                print(f"[DEBUG][Camera] rgb_annotator.get_data() exception for {self._prim_path}: {e}")
-
-            try:
-                shape = getattr(rgb_data, 'shape', None)
-            except Exception:
-                shape = None
-            print(f"[DEBUG][Camera] {self._prim_path} rgb get_data shape={shape}")
-
+            rgb_data = self._rgb_annotator.get_data()
             # Verificar se os dados estão prontos (array 3D com shape HxWxC)
-            if rgb_data is not None and hasattr(rgb_data, 'ndim') and rgb_data.ndim >= 3:
-                print(f"[DEBUG][Camera] {self._prim_path} setting rgb_image buffer, shape={rgb_data.shape}")
+            if rgb_data is not None and rgb_data.ndim >= 3:
                 self.rgb_image.set_value(rgb_data[:, :, :3])
-            else:
-                print(f"[DEBUG][Camera] RGB not set for {self._prim_path} (data missing or wrong shape)")
         if self._segmentation_annotator is not None:
-            try:
-                data = self._segmentation_annotator.get_data()
-            except Exception as e:
-                data = None
-                if DEBUG_SENSORS:
-                    print(f"[Camera] segmentation_annotator.get_data() exception for {self._prim_path}: {e}")
-
-            if DEBUG_SENSORS:
-                try:
-                    keys = list(data.keys()) if isinstance(data, dict) else None
-                except Exception:
-                    keys = None
-                seg_shape = None
-                try:
-                    seg_shape = getattr(data['data'], 'shape', None) if isinstance(data, dict) and 'data' in data else getattr(data, 'shape', None)
-                except Exception:
-                    pass
-                print(f"[Camera] {self._prim_path} segmentation get_data -> keys={keys} data_shape={seg_shape}")
-
-            if data is not None and isinstance(data, dict) and 'data' in data:
-                seg_image = data['data']
-                seg_info = data.get('info', None)
-                self.segmentation_image.set_value(seg_image)
-                self.segmentation_info.set_value(seg_info)
-            else:
-                if DEBUG_SENSORS:
-                    print(f"[Camera] segmentation data missing or unexpected for {self._prim_path}")
+            data = self._segmentation_annotator.get_data()
+            seg_image = data['data']
+            seg_info = data['info']
+            self.segmentation_image.set_value(seg_image)
+            self.segmentation_info.set_value(seg_info)
 
         if self._depth_annotator is not None:
-            try:
-                d = self._depth_annotator.get_data()
-            except Exception as e:
-                d = None
-                if DEBUG_SENSORS:
-                    print(f"[Camera] depth_annotator.get_data() exception for {self._prim_path}: {e}")
-            if DEBUG_SENSORS:
-                print(f"[Camera] {self._prim_path} depth get_data -> shape={getattr(d,'shape',None)}")
-            if d is not None:
-                self.depth_image.set_value(d)
+            self.depth_image.set_value(
+                self._depth_annotator.get_data()
+            )
 
         if self._instance_id_segmentation_annotator is not None:
-            try:
-                data = self._instance_id_segmentation_annotator.get_data()
-            except Exception as e:
-                data = None
-                if DEBUG_SENSORS:
-                    print(f"[Camera] instance_id_segmentation_annotator.get_data() exception for {self._prim_path}: {e}")
-            if DEBUG_SENSORS:
-                try:
-                    keys = list(data.keys()) if isinstance(data, dict) else None
-                except Exception:
-                    keys = None
-                id_shape = None
-                try:
-                    id_shape = getattr(data['data'], 'shape', None) if isinstance(data, dict) and 'data' in data else getattr(data, 'shape', None)
-                except Exception:
-                    pass
-                print(f"[Camera] {self._prim_path} instance_id_segmentation get_data -> keys={keys} data_shape={id_shape}")
-            if data is not None and isinstance(data, dict) and 'data' in data:
-                id_seg_image = data['data']
-                id_seg_info = data.get('info', None)
-                self.instance_id_segmentation_image.set_value(id_seg_image)
-                self.instance_id_segmentation_info.set_value(id_seg_info)
-            else:
-                if DEBUG_SENSORS:
-                    print(f"[Camera] instance id segmentation data missing or unexpected for {self._prim_path}")
+            data = self._instance_id_segmentation_annotator.get_data()
+            id_seg_image = data['data']
+            id_seg_info = data['info']
+            self.instance_id_segmentation_image.set_value(id_seg_image)
+            self.instance_id_segmentation_info.set_value(id_seg_info)
 
         if self._normals_annotator is not None:
             data = self._normals_annotator.get_data()
@@ -252,7 +186,6 @@ class Camera(Sensor):
         self.orientation.set_value(orientation)
         
         super().update_state()
-
 
 #=========================================================
 #  FINAL CLASSES
